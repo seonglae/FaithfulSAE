@@ -1,11 +1,13 @@
 # Import Packages
+import os
 import json
 import matplotlib.pyplot as plt
 from transformers import AutoTokenizer
 
 # Parameters
 MODEL_NAME = "gpt2"
-PATH = "llm-training-dataset-1024ctx-seed=0.jsonl"
+DATASET_PATH = "datasets/llm-training-dataset-1024ctx-seed=0.jsonl"
+RESULT_PATH = "results"
 TEXT_KEY = "text"  # JSONL field containing text
 
 # Define jsonl loading function
@@ -67,11 +69,13 @@ def plot(frequency, top_n=-1):
     plt.title(f"Top {top_n} Most Frequent Tokens")
     plt.xticks(rotation=45)
     plt.grid(axis="y")
-    image_name = "".join(PATH.split(".")[:-1]) + ".png"
-    plt.savefig(image_name)
+    imagename = "".join(DATASET_PATH.split(".")[:-1]) + ".png"
+    path = os.path.join(RESULT_PATH, imagename)
+    plt.savefig(path)
+    print(f"Saved {path}.")
 
 # Load the dataset
-dataset = load_jsonl(PATH)
+dataset = load_jsonl(DATASET_PATH)
 
 # Run the token freqeuncy function on the loaded dataset
 token_frequency = compute_token_frequency(dataset)

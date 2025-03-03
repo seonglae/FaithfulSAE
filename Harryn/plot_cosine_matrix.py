@@ -1,15 +1,19 @@
+import os
 import json
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModel
+from vllm import LLM
+
+# Model Parameters
+MODEL_NAME = "meta-llama/Llama-3.1-8B"
 
 # Configuration
-MODEL_NAME = "gpt2"
 TEXT_KEY = "text"  # JSONL field containing text
-BATCH_SIZE = 64
-SAMPLE_SIZE = 100
+BATCH_SIZE = 128
+SAMPLE_SIZE = 10_000
+RESULT_PATH = "results"
 S = 5  # Number of seeds
 extra_datasets = [
     "roneneldan/TinyStories"
@@ -36,19 +40,11 @@ def load_jsonl(file_path, sample_size=-1):
 def get_embedding(dataset):
     """Tokenizes text and extracts sentence embedding using mean pooling"""
     embeddings = []
-    with torch.no_grad():
-        for i in range(0, len(dataset), BATCH_SIZE):
-            batch = dataset[i : i + BATCH_SIZE]
-            tokens = tokenizer(
-                batch, padding=True, truncation=True, return_tensors="pt", max_length=1024
-            )
-            tokens = {key: value.to(device) for key, value in tokens.items()}
-            outputs = model(**tokens)  # Get hidden states from GPT-2
-            last_hidden_state = (
-                outputs.last_hidden_state
-            )  # Shape: (batch_size, seq_length, hidden_dim)
-            embedding = last_hidden_state.mean(dim=1)  # Mean pooling over tokens
-            embeddings.append(embedding.detach().cpu().numpy())  # Convert to NumPy array
+    for i in range(0, len(dataset), BATCH_SIZE):
+        batch = dataset[i : i + BATCH_SIZE]
+        outputs = llm.embed(batch)  # Get embeddings for give batch
+        embedding = [output.outputs.embedding for output in outputs]  # Extract embedding
+        embeddings.append(np.array(embedding))  # Convert to NumPy array
 
     return np.vstack(embeddings)
 
@@ -68,7 +64,9 @@ def plot_similarity_matrix(similarity_matrix, imagename="cosine_matrix.png"):
     plt.colorbar()
 
     # Label axes
-    dataset_names = [f"SEED={i}" for i in range(S)] + [name.split("/")[-1] for name in extra_datasets]
+    dataset_names = [f"SEED={i}" for i in range(S)] + [
+        name.split("/")[-1] for name in extra_datasets
+    ]
     num_of_datasets = len(dataset_names)
     plt.xticks(range(num_of_datasets), dataset_names, rotation=45, ha="right")
     plt.yticks(range(num_of_datasets), dataset_names)
@@ -85,21 +83,20 @@ def plot_similarity_matrix(similarity_matrix, imagename="cosine_matrix.png"):
             )
 
     # Save the image
-    plt.savefig(imagename)
+    path = os.path.join(RESULT_PATH, imagename)
+    plt.savefig(path)
+    print(f"Saved {path}.")
 
 
 if __name__ == "__main__":
-    # Load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModel.from_pretrained(MODEL_NAME).to(device)
-
-    # Use eos_token as pad_token for the tokenizer
-    tokenizer.pad_token = tokenizer.eos_token
+    # Load model
+    llm = LLM(model=MODEL_NAME, gpu_memory_utilization=0.95, task="embed")
 
     # Iteratively get the embeddings of each synthetic dataset
     mean_embeddings = []
     for i in range(S):
-        dataset_path = f"llm-training-dataset-1024ctx-seed={i}.jsonl"
+        dataset_path = f"datasets/llm-training-dataset-1024ctx-seed={i}.jsonl"
+        print(f"Getting embedding for {dataset_path}")
         dataset = load_jsonl(dataset_path, sample_size=SAMPLE_SIZE)
 
         # Get embedding
@@ -115,6 +112,7 @@ if __name__ == "__main__":
     for dataset_name in extra_datasets:
         # Load the dataset
         dataset = load_dataset(dataset_name, split="train")
+        print(f"Getting embedding for {dataset_name}")
 
         # Sample and get the list of dataset
         sampled_dataset = dataset[:SAMPLE_SIZE][TEXT_KEY]
@@ -137,4 +135,4 @@ if __name__ == "__main__":
             similarity_matrix[i, j] = consine_similarity(mean_embeddings[i], mean_embeddings[j])
 
     # Plot similarity matrix
-    plot_similarity_matrix(similarity_matrix)
+    plot_similarity_matrix(similarity_matrix, "cosine_matrix_llama.png")
