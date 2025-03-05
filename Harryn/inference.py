@@ -2,19 +2,18 @@ import os
 import gc
 import json
 import torch
-import numpy as np
 from vllm import LLM, SamplingParams
 
 # Model Hyperparameters
-TEMPERATURES = [0.2, 0.4, 0.6, 0.8, 1.0]  # List of temperatures
 CTX = 1024
 MAX_TOKENS = 1024
-TOP_PS = [1.0]
 
-# Inference Parameters
-N = 10_000  # Number of data to generate
-SEEDS = [0, 1, 2, 3, 4]  # List of seeds to generate
+# Dataset Parameters
 SAVE_PATH = "datasets"
+SEEDS = [0]  # List of seeds to generate
+N = 10_000  # Number of data to generate
+TEMPERATURES = [0.2, 0.5, 1.0]  # List of temperatures
+TOP_PS = [0.5, 0.8, 0.9, 1.0]  # List of top ps
 
 # Create N number of empty prompts
 prompts = [""] * N
@@ -25,7 +24,7 @@ for seed in SEEDS:
     for temp in TEMPERATURES:
         # Create different training dataset with different top_ps
         for top_p in TOP_PS:
-            output_file = f"llm-training-dataset-seed={seed}-temp={temp}-top_p={top_p}.jsonl"
+            output_file = f"seed={seed}-temp={temp}-top_p={top_p}.jsonl"
 
             # Create a sampling params object with the temp
             sampling_params = SamplingParams(temperature=temp, top_p=top_p, max_tokens=MAX_TOKENS)

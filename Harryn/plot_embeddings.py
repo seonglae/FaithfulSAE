@@ -1,10 +1,13 @@
 import os
 import json
+import umap
+import pacmap
 import numpy as np
 import matplotlib.pyplot as plt
 from vllm import LLM
 from tqdm import tqdm
 from datasets import load_dataset
+from sklearn.decomposition import PCA
 
 # Model Parameters
 MODEL_NAME = "meta-llama/Llama-3.1-8B"
@@ -13,8 +16,9 @@ MODEL_NAME = "meta-llama/Llama-3.1-8B"
 TEXT_KEY = "text"  # JSONL field containing text
 BATCH_SIZE = 1_000
 SAMPLE_SIZE = 10_000
+REDUCE_METHOD = "pca"
 DATASET_PATH = "datasets"
-RESULT_PATH = "results/cosine_matrix"
+RESULT_PATH = f"results/embeddings/{REDUCE_METHOD}"
 SEED = 42  # Random generator seed
 
 # Dataset Parameters
@@ -51,35 +55,40 @@ def get_embedding(dataset):
     return np.vstack(embeddings)
 
 
-def consine_similarity(vec1, vec2):
-    """Computes the consine similarity between the given vectors"""
-    dot_product = np.dot(vec1.flatten(), vec2.flatten())
-    norm1 = np.linalg.norm(vec1)
-    norm2 = np.linalg.norm(vec2)
-    return dot_product / (norm1 * norm2) if norm1 and norm2 else 0
+def reduce_embeddings(embeddings, type="pca"):
+    if type == "pca":
+        reducer = PCA(n_components=2, random_state=SEED)
+    elif type == "pacmap":
+        reducer = pacmap.PaCMAP(n_components=2, random_state=SEED)
+    elif type == "umap":
+        reducer = umap.UMAP(n_components=2, random_state=SEED)
+    else:
+        raise ValueError("Invalid option.")
+    all_embeddings = np.vstack(embeddings)
+    reduced_embeddings = reducer.fit_transform(all_embeddings)
+
+    return reduced_embeddings
 
 
-def plot_similarity_matrix(similarity_matrix, labels, imagename="cosine_matrix.png"):
-    """Plots the similarity matrix."""
+def plot(reduced_embeddings, labels, imagename="embeddings.png"):
+    """Plots the embeddings"""
     plt.figure(figsize=(8, 6))
-    plt.imshow(similarity_matrix, cmap="coolwarm", interpolation="nearest")
-    plt.colorbar()
-
-    # Label axes
-    num_of_datasets = len(labels)
-    plt.xticks(range(num_of_datasets), labels, rotation=45, ha="right")
-    plt.yticks(range(num_of_datasets), labels)
-    plt.title("Dataset-to-Dataset Cosine Similarity Matrix")
-    plt.xlabel("Dataset")
-    plt.ylabel("Dataset")
+    start_index = 0
+    for i, label in enumerate(labels):
+        end_index = start_index + len(embeddings[i])
+        plt.scatter(
+            reduced_embeddings[start_index:end_index, 0],
+            reduced_embeddings[start_index:end_index, 1],
+            label=label,
+            alpha=0.3,
+            s=10,
+        )
+        start_index = end_index
+    plt.legend()
+    plt.title("Embeddings Visualization")
+    plt.xlabel("Dimension 1")
+    plt.ylabel("Dimension 2")
     plt.tight_layout()
-
-    # Display similarity values on the heatmap
-    for i in range(num_of_datasets):
-        for j in range(num_of_datasets):
-            plt.text(
-                j, i, f"{similarity_matrix[i, j]:.4f}", ha="center", va="center", color="black"
-            )
 
     # Create result directory if not exits
     if not os.path.exists(RESULT_PATH):
@@ -88,42 +97,30 @@ def plot_similarity_matrix(similarity_matrix, labels, imagename="cosine_matrix.p
     # Save the image
     path = os.path.join(RESULT_PATH, imagename)
     plt.savefig(path)
-    print(f"Saved {path}.")
+    print(f"Saved {imagename}.")
 
 
 if __name__ == "__main__":
     # Load model
     llm = LLM(model=MODEL_NAME, gpu_memory_utilization=0.95, task="embed")
 
-    # Initiliase the label
-    labels = []
-
     # Iteratively get the embeddings of each synthetic dataset
-    mean_embeddings = []
-    # Load dataset with different temperatures
+    labels = []
+    embeddings = []
     for seed in SEEDS:
         for temp in TEMPERATURES:
-            # Load dataset with different top_ps
             for top_p in TOP_PS:
-                # Set the label
-                labels.append(f"seed-{seed},temp={temp},top_p={top_p}")
-
-                # Construct the dataset path
+                labels.append(f"seed={seed},temp={top_p},top_p={top_p}")
                 filename = f"seed={seed}-temp={temp}-top_p={top_p}.jsonl"
                 dataset_path = os.path.join(DATASET_PATH, filename)
                 print(f"Getting embeddings for {dataset_path}")
-
-                # Load the dataset
                 dataset = load_jsonl(dataset_path, sample_size=SAMPLE_SIZE)
 
                 # Get embedding
                 embedding = get_embedding(dataset)
 
-                # Compute mean embedding
-                mean_embedding = np.mean(embedding, axis=0)
-
-                # Store the mean embedding
-                mean_embeddings.append(mean_embedding)
+                # Store the embedding
+                embeddings.append(embedding)
 
     # Get the embeddings of each extra dataset
     for dataset_property in extra_datasets:
@@ -149,19 +146,10 @@ if __name__ == "__main__":
         # Get embedding
         embedding = get_embedding(sampled_dataset)
 
-        # Compute mean embedding
-        mean_embedding = np.mean(embedding, axis=0)
+        # Store the embedding
+        embeddings.append(embedding)
 
-        # Store the mean embedding
-        mean_embeddings.append(mean_embedding)
+    reduced_embeddings = reduce_embeddings(embeddings, type=REDUCE_METHOD)
 
-    # Compute similarity matrix
-    num_of_datasets = len(mean_embeddings)
-    similarity_matrix = np.zeros((num_of_datasets, num_of_datasets))
-
-    for i in range(num_of_datasets):
-        for j in range(num_of_datasets):
-            similarity_matrix[i, j] = consine_similarity(mean_embeddings[i], mean_embeddings[j])
-
-    # Plot similarity matrix
-    plot_similarity_matrix(similarity_matrix, labels, "cosine_matrix.png")
+    # Plot the embeddings
+    plot(reduced_embeddings, labels, imagename=f"{REDUCE_METHOD}_temp.png")
