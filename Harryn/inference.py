@@ -12,9 +12,9 @@ MAX_TOKENS = 1024
 # Dataset Parameters
 SAVE_PATH = "datasets"
 SEEDS = [0]  # List of seeds to generate
-N = 10_000  # Number of data to generate
 TEMPERATURES = [0.2, 0.5, 1.0]  # List of temperatures
 TOP_PS = [0.5, 0.8, 0.9, 1.0]  # List of top ps
+N = 10_000  # Number of data to generate
 
 # Create N number of empty prompts
 prompts = [""] * N
@@ -38,6 +38,10 @@ for seed in SEEDS:
                 seed=seed,
                 task="generate",
             )
+
+            # Create save directory if not exits
+            if not os.path.exists(SAVE_PATH):
+                os.makedirs(SAVE_PATH)
 
             # Generate and save the outputs.
             output_path = os.path.join(SAVE_PATH, output_file)
