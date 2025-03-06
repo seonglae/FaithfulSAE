@@ -5,6 +5,7 @@ import torch
 from vllm import LLM, SamplingParams
 
 # Model Hyperparameters
+MODEL_NAME = "meta-llama/Llama-3.1-8B"
 CTX = 1024
 MAX_TOKENS = 1024
 
@@ -31,10 +32,11 @@ for seed in SEEDS:
 
             # Create an LLM using llama 3.1 8B model
             llm = LLM(
-                model="meta-llama/Llama-3.1-8B",
+                model=MODEL_NAME,
                 gpu_memory_utilization=0.95,
                 max_model_len=CTX,
                 seed=seed,
+                task="generate",
             )
 
             # Generate and save the outputs.
