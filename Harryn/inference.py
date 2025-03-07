@@ -13,18 +13,18 @@ MAX_TOKENS = 1024
 # Dataset Parameters
 SAVE_PATH = "datasets"
 SEEDS = [0]  # List of seeds to generate
-TEMPERATURES = [0.2, 0.5, 1.0]  # List of temperatures
-TOP_PS = [0.5, 0.8, 0.9, 1.0]  # List of top ps
+TEMPERATURES = [1.0]  # List of temperatures
+TOP_PS = [1.0]  # List of top ps
 N = 10_000  # Number of data to generate
 
 # Get tokenizer
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-# Get the bos token
-bos_token = tokenizer.bos_token
+# Get the id of the bos_token
+bos_token_id = tokenizer.bos_token_id
 
 # Use the bos_token as the prompt
-prompts = [bos_token] * N
+prompt_token_ids = [bos_token_id] * N
 
 # Create different training dataset with different seeds
 for seed in SEEDS:
@@ -53,7 +53,9 @@ for seed in SEEDS:
             # Generate and save the outputs.
             output_path = os.path.join(SAVE_PATH, output_file)
             with open(output_path, "w", encoding="utf-8") as f:
-                for i, output in enumerate(llm.generate(prompts, sampling_params)):
+                for i, output in enumerate(
+                    llm.generate(prompt_token_ids=prompt_token_ids, sampling_params=sampling_params)
+                ):
                     generated_text = output.outputs[0].text
 
                     # Write output in JSONL format
