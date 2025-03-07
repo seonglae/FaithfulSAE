@@ -3,6 +3,7 @@ import gc
 import json
 import torch
 from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
 
 # Model Hyperparameters
 MODEL_NAME = "meta-llama/Llama-3.1-8B"
@@ -16,8 +17,14 @@ TEMPERATURES = [0.2, 0.5, 1.0]  # List of temperatures
 TOP_PS = [0.5, 0.8, 0.9, 1.0]  # List of top ps
 N = 10_000  # Number of data to generate
 
-# Create N number of empty prompts
-prompts = [""] * N
+# Get tokenizer
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+# Get the bos token
+bos_token = tokenizer.bos_token
+
+# Use the bos_token as the prompt
+prompts = [bos_token] * N
 
 # Create different training dataset with different seeds
 for seed in SEEDS:
