@@ -2,6 +2,7 @@ import os
 import json
 import umap
 import pacmap
+import random
 import numpy as np
 import matplotlib.pyplot as plt
 from vllm import LLM
@@ -13,25 +14,27 @@ MODEL_NAME = "meta-llama/Llama-3.1-8B"
 
 # Configuration
 TEXT_KEY = "text"  # JSONL field containing text
-BATCH_SIZE = 1_000
-SAMPLE_SIZE = 10_000
+BATCH_SIZE = 1000
+SAMPLE_SIZE = 1000
 REDUCE_METHOD = "pca"
 DATASET_PATH = "datasets"
 RESULT_PATH = f"results/kmeans/{REDUCE_METHOD}"
 SEED = 42  # Random generator seed
+K = 5 # Number of clusters
 
-
-def load_jsonl(file_path, sample_size=-1):
+def load_jsonl(file_path, sample_size):
     """Load JSONL dataset up to given sample_size"""
     texts = []
     with open(file_path, "r", encoding="utf-8") as f:
-        for i, line in enumerate(f):
-            if sample_size != -1 and i >= sample_size:
-                break
+        for line in f:
             data = json.loads(line)
             if TEXT_KEY in data:
                 texts.append(data[TEXT_KEY])
-    return texts
+
+    # Randomly sample sample_size
+    random.seed(SEED)
+    sampled_texts = random.sample(texts, sample_size)
+    return sampled_texts
 
 
 def get_embedding(dataset):
@@ -68,7 +71,7 @@ def apply_kmeans(embeddings, k=5):
     return labels
 
 
-def plot_kmeans(reduced_embeddings, labels, imagename="kmeans.png"):
+def plot_kmeans(reduced_embeddings, labels, k, imagename="kmeans.png"):
     """Plots kmeans"""
 
     # Define markers and colors
@@ -77,7 +80,7 @@ def plot_kmeans(reduced_embeddings, labels, imagename="kmeans.png"):
 
     # Plot
     plt.figure(figsize=(8, 6))
-    for cluster in range(len(labels)):
+    for cluster in range(k):
         points = reduced_embeddings[labels == cluster]
         plt.scatter(
             points[:, 0],
@@ -105,7 +108,7 @@ def plot_kmeans(reduced_embeddings, labels, imagename="kmeans.png"):
 
 if __name__ == "__main__":
     # Load model
-    llm = LLM(model=MODEL_NAME, gpu_memory_utilization=0.95, task="embed")
+    llm = LLM(model=MODEL_NAME, gpu_memory_utilization=0.95, max_model_len=2048, task="embed")
 
     # Fet the embeddings of the dataset
     filename = f"merged_temp_dataset.jsonl"
@@ -117,10 +120,10 @@ if __name__ == "__main__":
     embeddings = get_embedding(dataset)
 
     # Apply k-means
-    labels = apply_kmeans(embeddings, k=5)
+    labels = apply_kmeans(embeddings, k=K)
 
     # Reduce the embeddings
     reduced_embeddings = reduce_embeddings(embeddings, REDUCE_METHOD)
 
     # Plot kmeans
-    plot_kmeans(reduced_embeddings, labels, imagename="kmeans.png")
+    plot_kmeans(reduced_embeddings, labels, k=5, imagename=f"kmeans_{REDUCE_METHOD}.png")

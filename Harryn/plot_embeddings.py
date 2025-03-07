@@ -2,6 +2,7 @@ import os
 import json
 import umap
 import pacmap
+import random
 import numpy as np
 import matplotlib.pyplot as plt
 from vllm import LLM
@@ -15,7 +16,7 @@ MODEL_NAME = "meta-llama/Llama-3.1-8B"
 # Configuration
 TEXT_KEY = "text"  # JSONL field containing text
 BATCH_SIZE = 1_000
-SAMPLE_SIZE = 10_000
+SAMPLE_SIZE = 1_000
 REDUCE_METHOD = "pca"
 DATASET_PATH = "datasets"
 RESULT_PATH = f"results/embeddings/{REDUCE_METHOD}"
@@ -23,8 +24,8 @@ SEED = 42  # Random generator seed
 
 # Dataset Parameters
 SEEDS = [0]  # List of seeds
-TEMPERATURES = [0.2, 0.4, 0.6, 0.8, 1.0]  # List of temperatures
-TOP_PS = [1.0]  # List of top_ps
+TEMPERATURES = [1.0]  # List of temperatures
+TOP_PS = [0.5, 0.8, 0.9, 1.0]  # List of top_ps
 extra_datasets = [
     ["roneneldan/TinyStories"],
     ["HuggingFaceFW/fineweb", "sample-10BT"],
@@ -35,12 +36,15 @@ def load_jsonl(file_path, sample_size):
     """Load JSONL dataset up to given sample_size"""
     texts = []
     with open(file_path, "r", encoding="utf-8") as f:
-        for _ in tqdm(range(sample_size), desc="Sampled data"):
-            line = f.readline()
+        for line in f:
             data = json.loads(line)
             if TEXT_KEY in data:
                 texts.append(data[TEXT_KEY])
-    return texts
+
+    # Randomly sample sample_size
+    random.seed(SEED)
+    sampled_texts = random.sample(texts, sample_size)
+    return sampled_texts
 
 
 def get_embedding(dataset):
@@ -102,7 +106,7 @@ def plot(reduced_embeddings, labels, imagename="embeddings.png"):
 
 if __name__ == "__main__":
     # Load model
-    llm = LLM(model=MODEL_NAME, gpu_memory_utilization=0.95, task="embed")
+    llm = LLM(model=MODEL_NAME, gpu_memory_utilization=0.95, max_model_len=2048, task="embed")
 
     # Iteratively get the embeddings of each synthetic dataset
     labels = []
@@ -152,4 +156,4 @@ if __name__ == "__main__":
     reduced_embeddings = reduce_embeddings(embeddings, type=REDUCE_METHOD)
 
     # Plot the embeddings
-    plot(reduced_embeddings, labels, imagename=f"{REDUCE_METHOD}_temp.png")
+    plot(reduced_embeddings, labels, imagename=f"top_p-{REDUCE_METHOD}.png")

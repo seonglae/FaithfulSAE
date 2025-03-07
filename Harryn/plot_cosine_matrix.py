@@ -1,5 +1,6 @@
 import os
 import json
+import random
 import numpy as np
 import matplotlib.pyplot as plt
 from vllm import LLM
@@ -11,7 +12,7 @@ MODEL_NAME = "meta-llama/Llama-3.1-8B"
 
 # Configuration
 TEXT_KEY = "text"  # JSONL field containing text
-BATCH_SIZE = 1_000
+BATCH_SIZE = 10_000
 SAMPLE_SIZE = 10_000
 DATASET_PATH = "datasets"
 RESULT_PATH = "results/cosine_matrix"
@@ -20,7 +21,7 @@ SEED = 42  # Random generator seed
 # Dataset Parameters
 SEEDS = [0]  # List of seeds
 TEMPERATURES = [0.2, 0.4, 0.6, 0.8, 1.0]  # List of temperatures
-TOP_PS = [1.0]  # List of top_ps
+TOP_PS = [1.0] # List of top_ps
 extra_datasets = [
     ["roneneldan/TinyStories"],
     ["HuggingFaceFW/fineweb", "sample-10BT"],
@@ -31,12 +32,15 @@ def load_jsonl(file_path, sample_size):
     """Load JSONL dataset up to given sample_size"""
     texts = []
     with open(file_path, "r", encoding="utf-8") as f:
-        for _ in tqdm(range(sample_size), desc="Sampled data"):
-            line = f.readline()
+        for line in f:
             data = json.loads(line)
             if TEXT_KEY in data:
                 texts.append(data[TEXT_KEY])
-    return texts
+
+    # Randomly sample sample_size
+    random.seed(SEED)
+    sampled_texts = random.sample(texts, sample_size)
+    return sampled_texts
 
 
 def get_embedding(dataset):
@@ -93,7 +97,7 @@ def plot_similarity_matrix(similarity_matrix, labels, imagename="cosine_matrix.p
 
 if __name__ == "__main__":
     # Load model
-    llm = LLM(model=MODEL_NAME, gpu_memory_utilization=0.95, task="embed")
+    llm = LLM(model=MODEL_NAME, gpu_memory_utilization=0.95, max_model_len=2048, task="embed")
 
     # Initiliase the label
     labels = []
@@ -106,7 +110,7 @@ if __name__ == "__main__":
             # Load dataset with different top_ps
             for top_p in TOP_PS:
                 # Set the label
-                labels.append(f"seed-{seed},temp={temp},top_p={top_p}")
+                labels.append(f"s-{seed},t={temp},p={top_p}")
 
                 # Construct the dataset path
                 filename = f"seed={seed}-temp={temp}-top_p={top_p}.jsonl"
@@ -164,4 +168,4 @@ if __name__ == "__main__":
             similarity_matrix[i, j] = consine_similarity(mean_embeddings[i], mean_embeddings[j])
 
     # Plot similarity matrix
-    plot_similarity_matrix(similarity_matrix, labels, "cosine_matrix.png")
+    plot_similarity_matrix(similarity_matrix, labels, "cosine_matrix_temp.png")
