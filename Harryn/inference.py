@@ -24,7 +24,7 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 bos_token_id = tokenizer.bos_token_id
 
 # Use the bos_token as the prompt
-prompt_token_ids = [bos_token_id] * N
+prompt_token_ids = [[bos_token_id]] * N
 
 # Create different training dataset with different seeds
 for seed in SEEDS:
@@ -37,7 +37,7 @@ for seed in SEEDS:
             # Create a sampling params object with the temp
             sampling_params = SamplingParams(temperature=temp, top_p=top_p, max_tokens=MAX_TOKENS)
 
-            # Create an LLM using llama 3.1 8B model
+            # Create an LLM model
             llm = LLM(
                 model=MODEL_NAME,
                 gpu_memory_utilization=0.95,
