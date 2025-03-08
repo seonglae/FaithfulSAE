@@ -8,7 +8,6 @@ MODEL_NAME = "meta-llama/Llama-3.1-8B"
 
 # Configuration
 TEXT_KEY = "text"  # JSONL field containing text
-BATCH_SIZE = 10_000
 SAMPLE_SIZE = 10_000
 DATASET_PATH = "datasets"
 
@@ -27,7 +26,7 @@ def load_jsonl(file_path, sample_size):
 
 def get_tokens(dataset):
     tokens = []
-    for data in dataset:
+    for data in tqdm(dataset, desc="Processed data"):
         token = tokenizer(data)["input_ids"]
         tokens.append(token)
 
@@ -56,13 +55,8 @@ if __name__ == "__main__":
     # Get tokens
     tokens = get_tokens(dataset)
 
-    min_tokens = len(min(tokens, key=lambda t: len(t)))
-    max_tokens = len(max(tokens, key=lambda t: len(t)))
-
-    print(min_tokens, max_tokens)
-
     # Loop through tokens
-    for i, token in enumerate(tokens):
+    for i, token in enumerate(tqdm(tokens, desc="Processed tokens")):
         token_count = len(token)
         total_tokens += token_count
         total_samples += 1
