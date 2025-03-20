@@ -4,12 +4,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from collections import Counter, defaultdict
+from collections import Counter
 import torch
 from tqdm import tqdm
-import matplotlib as mpl
-import statistics
-from vllm import LLM, SamplingParams
 
 def visualize_distributions(model_dist, dataset_dist, model_top_tokens, model_top_prob, 
                            dataset_top_tokens, dataset_top_prob, topk, vocab_size):
@@ -81,7 +78,7 @@ def visualize_distributions(model_dist, dataset_dist, model_top_tokens, model_to
     print("Graph saved to 'token_distribution_analysis.png'")
 
 
-def dist(model_name="EleutherAI/pythia-6.9b", dataset_name="seonglae/true-synthetic-pythia-6.9b", column="text", split="train", topk=10):
+def dist(model_name="google/gemma-2-2b", dataset_name="seonglae/faithful-gemma2-2b", column="text", split="train", topk=10):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name)
     model.eval()
