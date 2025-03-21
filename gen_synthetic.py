@@ -161,11 +161,10 @@ def sglang(
 def tensorrt_llm(
     model_name="google/gemma-2-2b",
     max_tokens=1024,
-    seed=42,
     temperature=1.0,
     top_p=1.0,
     batch_size=1024,
-    total_tokens=4e5,
+    total_tokens=1e8,
     repo="seonglae/faithful-gemma2-2b"
 ):
     from tensorrt_llm import LLM, SamplingParams

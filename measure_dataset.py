@@ -36,7 +36,6 @@ def visualize_distributions(model_dist, dataset_dist, model_top_tokens, model_to
     
     max_index = vocab_size
     colors = [cmap(idx/max_index) for idx in x_indices]
-    
     for i in range(len(x_indices)-1):
         plt.fill_between(x_indices[i:i+2], y_values[i:i+2], color=colors[i], alpha=0.7)
     plt.plot(x_indices, y_values, color='black', linewidth=0.5, alpha=0.5)
@@ -118,7 +117,7 @@ def dist(model_name="google/gemma-2-2b", dataset_name="seonglae/faithful-gemma2-
         
         for ids in batch_encodings['input_ids']:
             if len(ids) > 0:
-                first_tokens.append(ids[0])
+                first_tokens.append(ids[1])
                 all_tokens.extend(ids)
     
     variance = m2 / (total_examples - 1) if total_examples > 1 else 0
@@ -163,11 +162,14 @@ def dist(model_name="google/gemma-2-2b", dataset_name="seonglae/faithful-gemma2-
     model_top_idx = np.argsort(-model_dist)[:topk]
     model_top_prob = model_dist[model_top_idx]
     model_top_tokens = [tokenizer.decode([idx]) for idx in model_top_idx]
+    print(model_top_idx)
+    print(model_top_tokens)
     
     dataset_top_idx = np.argsort(-dataset_dist)[:topk]
     dataset_top_prob = dataset_dist[dataset_top_idx]
     dataset_top_tokens = [tokenizer.decode([idx]) for idx in dataset_top_idx]
-    
+    print(dataset_top_idx)
+    print(dataset_top_tokens)
     eps = 1e-10
     kl1 = np.sum(np.where(model_dist > 0, model_dist * np.log((model_dist + eps) / (dataset_dist + eps)), 0))
     kl2 = np.sum(np.where(dataset_dist > 0, dataset_dist * np.log((dataset_dist + eps) / (model_dist + eps)), 0))
