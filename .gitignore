@@ -1,2 +1,6 @@
-*.jsonl
-*.png
+checkpoints
+datasets/*.jsonl
+sparsify
+wandb
+*.csv
+*.pkl
