@@ -10,6 +10,8 @@ import concurrent.futures
 
 from datasets import Dataset, DatasetDict, concatenate_datasets
 from transformers import AutoTokenizer
+from huggingface_hub import HfApi
+from collections import defaultdict
 
 def merge_and_push_dataset(all_data, repo, fields):
     new_dataset = Dataset.from_dict({
@@ -29,19 +31,20 @@ def merge_and_push_dataset(all_data, repo, fields):
     merged_dataset.push_to_hub(repo)
     return merged_dataset
 
-def vllm(model_name="EleutherAI/pythia-410m", ctx=1024, max_tokens=1024, seed=42, temperature=1.0, top_p=1.0, total_tokens=4e8, repo="seonglae/faithful-pythia-410m"):
+def vllm(model_name="meta-llama/Llama-3.1-8B", ctx=1024, max_tokens=1024, seed=42, temperature=1.0, top_p=1.0, total_tokens=1e8, repo="seonglae/faithful-llama3.1-8b", upload_interval=1e7):
     from vllm import LLM, SamplingParams
     
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     bos_token_id = tokenizer.bos_token_id
     batch_size = 1000
     
-    sampling_params = SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens)
+    sampling_params = SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens - 1)
     llm = LLM(model=model_name, max_model_len=ctx, seed=seed, task="generate")
     
     all_data = []
     tokens_generated = 0
     sample_id = 0
+    last_upload = 0
     
     pbar = tqdm(total=total_tokens, unit='tokens')
     
@@ -69,16 +72,21 @@ def vllm(model_name="EleutherAI/pythia-410m", ctx=1024, max_tokens=1024, seed=42
             tokens_generated += num_tokens
             sample_id += 1
             pbar.update(num_tokens)
+            
+            if tokens_generated - last_upload >= upload_interval:
+                fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
+                merge_and_push_dataset(all_data, repo, fields)
+                last_upload = tokens_generated
+    
+    if all_data:
+        fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
+        merge_and_push_dataset(all_data, repo, fields)
     
     pbar.close()
-    
-    fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
-    merge_and_push_dataset(all_data, repo, fields)
     
     del llm
     gc.collect()
     torch.cuda.empty_cache()
-
 
 def sglang(
     model_name="meta-llama/Meta-Llama-3.1-8B-Instruct",
@@ -89,7 +97,8 @@ def sglang(
     prompt="The capital of France is",
     total_tokens=4e8,
     repo="seonglae/faithful-llama3.1-8b",
-    workers=10
+    workers=10,
+    upload_interval=1e7
 ):
     from sglang.utils import launch_server_cmd, wait_for_server, terminate_process
     
@@ -104,6 +113,7 @@ def sglang(
     all_data = []
     tokens_generated = 0
     sample_id = 0
+    last_upload = 0
     
     pbar = tqdm(total=total_tokens, unit='tokens')
     
@@ -143,16 +153,22 @@ def sglang(
                 sample_id += 1
                 pbar.update(num_tokens)
                 
+                if tokens_generated - last_upload >= upload_interval:
+                    fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
+                    merge_and_push_dataset(all_data, repo, fields)
+                    last_upload = tokens_generated
+                
                 if tokens_generated < total_tokens:
                     futures.append(executor.submit(call_generate))
                 
                 if tokens_generated >= total_tokens:
                     break
     
-    pbar.close()
+    if all_data:
+        fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
+        merge_and_push_dataset(all_data, repo, fields)
     
-    fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
-    merge_and_push_dataset(all_data, repo, fields)
+    pbar.close()
     
     terminate_process(server_process)
     gc.collect()
@@ -165,7 +181,8 @@ def tensorrt_llm(
     top_p=1.0,
     batch_size=1024,
     total_tokens=1e8,
-    repo="seonglae/faithful-gemma2-2b"
+    repo="seonglae/faithful-gemma2-2b",
+    upload_interval=1e7
 ):
     from tensorrt_llm import LLM, SamplingParams
     
@@ -177,12 +194,13 @@ def tensorrt_llm(
     all_data = []
     tokens_generated = 0
     sample_id = 0
+    last_upload = 0
     
     pbar = tqdm(total=total_tokens, unit='tokens')
     
     while tokens_generated < total_tokens:
         prompt_token_ids = [[bos_token_id]] * batch_size
-        sampling_params = [SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens - 1, seed=i, random_seed=None) for i in range(batch_size)]
+        sampling_params = [SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens - 1, seed=i + sample_id, random_seed=None) for i in range(batch_size)]
         outputs = llm.generate(inputs=prompt_token_ids, sampling_params=sampling_params)
         
         for i, output in enumerate(outputs):
@@ -191,6 +209,7 @@ def tensorrt_llm(
             
             all_data.append({
                 "id": sample_id,
+                "seed": sampling_params[i].seed,
                 "temp": temperature,
                 "top_p": top_p,
                 "text": text,
@@ -201,13 +220,19 @@ def tensorrt_llm(
             sample_id += 1
             pbar.update(num_tokens)
             
+            if tokens_generated - last_upload >= upload_interval:
+                fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
+                merge_and_push_dataset(all_data, repo, fields)
+                last_upload = tokens_generated
+            
             if tokens_generated >= total_tokens:
                 break
     
-    pbar.close()
+    if all_data:
+        fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
+        merge_and_push_dataset(all_data, repo, fields)
     
-    fields = ["id", "temp", "top_p", "text", "tokens"]
-    merge_and_push_dataset(all_data, repo, fields)
+    pbar.close()
     
     del llm
     gc.collect()
@@ -225,5 +250,5 @@ if __name__ == "__main__":
     fire.Fire({
         "sglang": sglang,
         "vllm": vllm,
-        "tensorrt": tensorrt_llm,
+        "tensorrt": tensorrt_llm
     })
