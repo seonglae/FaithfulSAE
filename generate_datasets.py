@@ -6,7 +6,7 @@ import argparse
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 
-from utils.constants import ELEUTHERAI, PYTHIA_1_4B
+from constants import ELEUTHERAI, PYTHIA_1_4B
 
 # Model Hyperparameters
 CTX = 1024

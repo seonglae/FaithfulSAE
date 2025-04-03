@@ -1,9 +1,9 @@
-torch
-scipy
-tqdm
 pandas
-itertools
-sparsify
-vllm
-transformers
-datasets
+scipy
+torch==2.5.1
+tqdm==4.67.1
+torchaudio==2.5.1
+torchvision==0.20.1
+transformers==4.49.0
+vllm==0.7.3
+datasets==3.3.2

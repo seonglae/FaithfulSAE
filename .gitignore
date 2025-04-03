@@ -4,3 +4,4 @@ sparsify
 wandb
 *.csv
 *.pkl
+__pycache__
