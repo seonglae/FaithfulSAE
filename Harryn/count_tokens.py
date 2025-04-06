@@ -4,20 +4,22 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 # Model Hyperparameters
-MODEL_NAME = "meta-llama/Llama-3.1-8B"
+MODEL_NAME = "EleutherAI/pythia-2.8b"
 
 # Configuration
 TEXT_KEY = "text"  # JSONL field containing text
-SAMPLE_SIZE = 10_000
+SAMPLE_SIZE = -1
 DATASET_PATH = "datasets"
 
 
-def load_jsonl(file_path, sample_size):
+def load_jsonl(file_path, sample_size=-1):
     """Load JSONL dataset up to given sample_size"""
     texts = []
     with open(file_path, "r", encoding="utf-8") as f:
-        for _ in tqdm(range(sample_size), desc="Sampled data"):
-            line = f.readline()
+        lines = f.readlines()
+        num_samples = len(lines) if sample_size == -1 else sample_size
+        for idx in tqdm(range(num_samples), desc="Sampled data"):
+            line = lines[idx]
             data = json.loads(line)
             if TEXT_KEY in data:
                 texts.append(data[TEXT_KEY])
@@ -38,7 +40,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
     # Set the dataset path
-    filename = f"seed=0-temp=1.0-top_p=1.0.jsonl"
+    filename = f"harmful_dataset.jsonl"
     dataset_path = os.path.join(DATASET_PATH, filename)
 
     # Load the dataset
