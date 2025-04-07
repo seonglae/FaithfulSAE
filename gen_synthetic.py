@@ -1,16 +1,10 @@
-import os
-import gc
-import json
-import torch
 import fire
 import requests
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 
-from datasets import Dataset, DatasetDict, concatenate_datasets
-from transformers import AutoTokenizer
-from huggingface_hub import HfApi
+from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
 from collections import defaultdict
 
 def merge_and_push_dataset(all_data, repo, fields):
@@ -19,7 +13,7 @@ def merge_and_push_dataset(all_data, repo, fields):
     })
     
     try:
-        existing_dataset = DatasetDict.load_from_hub(repo)
+        existing_dataset = load_dataset(repo)
         merged_dataset = DatasetDict({
             "train": concatenate_datasets([existing_dataset["train"], new_dataset])
         })
@@ -31,15 +25,16 @@ def merge_and_push_dataset(all_data, repo, fields):
     merged_dataset.push_to_hub(repo)
     return merged_dataset
 
-def vllm(model_name="meta-llama/Llama-3.1-8B", ctx=1024, max_tokens=1024, seed=42, temperature=1.0, top_p=1.0, total_tokens=1e8, repo="seonglae/faithful-llama3.1-8b", upload_interval=1e7):
+def vllm(model_name="meta-llama/Llama-3.1-8B", ctx=1024, max_tokens=1024, seed=42, temperature=1.0, top_p=1.0, total_tokens=1e7, repo="seonglae/faithful-llama3.1-8b", upload_interval=1e7, dtype="auto"):
     from vllm import LLM, SamplingParams
+    from transformers import AutoTokenizer
     
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     bos_token_id = tokenizer.bos_token_id
     batch_size = 1000
     
     sampling_params = SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens - 1)
-    llm = LLM(model=model_name, max_model_len=ctx, seed=seed, task="generate")
+    llm = LLM(model=model_name, max_model_len=ctx, seed=seed, task="generate", dtype=dtype)
     
     all_data = []
     tokens_generated = 0
@@ -81,12 +76,8 @@ def vllm(model_name="meta-llama/Llama-3.1-8B", ctx=1024, max_tokens=1024, seed=4
     if all_data:
         fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
         merge_and_push_dataset(all_data, repo, fields)
-    
     pbar.close()
-    
     del llm
-    gc.collect()
-    torch.cuda.empty_cache()
 
 def sglang(
     model_name="meta-llama/Meta-Llama-3.1-8B-Instruct",
@@ -108,6 +99,7 @@ def sglang(
     print(f"Server started on http://localhost:{port}")
     
     base_url = f"http://localhost:{port}"
+    from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
     all_data = []
@@ -171,84 +163,87 @@ def sglang(
     pbar.close()
     
     terminate_process(server_process)
-    gc.collect()
-    torch.cuda.empty_cache()
 
-def tensorrt_llm(
-    model_name="google/gemma-2-2b",
-    max_tokens=1024,
-    temperature=1.0,
-    top_p=1.0,
-    batch_size=1024,
-    total_tokens=1e8,
-    repo="seonglae/faithful-gemma2-2b",
-    upload_interval=1e7
-):
-    from tensorrt_llm import LLM, SamplingParams
+
+def merge_datasets(owner="seonglae", keyword="faithful-llama3.2-1b", push=False):
+    from huggingface_hub import HfApi
+    api = HfApi()
     
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    bos_token_id = tokenizer.bos_token_id
+    print(f"Fetching datasets from {owner} with keyword '{keyword}'...")
+    datasets = api.list_datasets(author=owner)
+    faithful_datasets = [d.id for d in datasets if keyword in d.id.lower()]
     
-    llm = LLM(model=model_name)
-    
-    all_data = []
-    tokens_generated = 0
-    sample_id = 0
-    last_upload = 0
-    
-    pbar = tqdm(total=total_tokens, unit='tokens')
-    
-    while tokens_generated < total_tokens:
-        prompt_token_ids = [[bos_token_id]] * batch_size
-        sampling_params = [SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens - 1, seed=i + sample_id, random_seed=None) for i in range(batch_size)]
-        outputs = llm.generate(inputs=prompt_token_ids, sampling_params=sampling_params)
-        
-        for i, output in enumerate(outputs):
-            text = output.outputs[0].text
-            num_tokens = len(tokenizer.encode(text))
+    for dataset_id in tqdm(faithful_datasets, desc="Processing datasets"):
+        try:
+            print(f"\nProcessing {dataset_id}")
+            commits = api.list_repo_commits(repo_id=dataset_id, repo_type="dataset")
+            all_data = []
+            total_tokens = 0
+            unique_sequences = set()
+            unique_sequence_tokens = 0
+            seen_datasets = set()
             
-            all_data.append({
-                "id": sample_id,
-                "seed": sampling_params[i].seed,
-                "temp": temperature,
-                "top_p": top_p,
-                "text": text,
-                "tokens": num_tokens
-            })
+            for commit in tqdm(commits, desc="Processing commits", leave=False):
+                try:
+                    dataset = load_dataset(dataset_id, revision=commit.commit_id)
+                    if "train" not in dataset:
+                        print(f"Skipping commit {commit.commit_id} - no train split")
+                        continue
+                    
+                    train_data = dataset["train"]
+                    if len(train_data) == 0:
+                        print(f"Skipping commit {commit.commit_id} - empty dataset")
+                        continue
+                        
+                    first_text = train_data[0]["text"]
+                    last_text = train_data[-1]["text"]
+                    dataset_key = (first_text, last_text)
+                    
+                    if dataset_key in seen_datasets:
+                        print(f"Skipping commit {commit.commit_id} - duplicate dataset")
+                        continue
+                        
+                    seen_datasets.add(dataset_key)
+                    
+                    for item in train_data:
+                        all_data.append(item)
+                        total_tokens += item["tokens"]
+                        if item["text"] not in unique_sequences:
+                            unique_sequences.add(item["text"])
+                            unique_sequence_tokens += item["tokens"]
+                        
+                except Exception as e:
+                    print(f"Error processing commit {commit.commit_id}: {e}")
+                    continue
             
-            tokens_generated += num_tokens
-            sample_id += 1
-            pbar.update(num_tokens)
-            
-            if tokens_generated - last_upload >= upload_interval:
+            if all_data:
+                print(f"\nDataset Statistics for {dataset_id}:")
+                print(f"Total number of commits processed: {len(commits)}")
+                print(f"Total number of unique commits: {len(seen_datasets)}")
+                print(f"Total number of rows: {len(all_data)}")
+                print(f"Total number of unique sequences: {len(unique_sequences)}")
+                print(f"Total number of tokens: {total_tokens}")
+                print(f"Total number of tokens in unique sequences: {unique_sequence_tokens}")
+                
                 fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
-                merge_and_push_dataset(all_data, repo, fields)
-                last_upload = tokens_generated
-            
-            if tokens_generated >= total_tokens:
-                break
-    
-    if all_data:
-        fields = ["id", "seed", "temp", "top_p", "text", "tokens"]
-        merge_and_push_dataset(all_data, repo, fields)
-    
-    pbar.close()
-    
-    del llm
-    gc.collect()
-    torch.cuda.empty_cache()
+                new_dataset = Dataset.from_dict({
+                    field: [d[field] for d in all_data] for field in fields
+                })
+                dataset_dict = DatasetDict({"train": new_dataset})
+                if push:
+                    dataset_dict.push_to_hub(dataset_id)
+                print(f"Combined dataset pushed to {dataset_id}")
+            else:
+                print(f"No data to merge for {dataset_id}")
+                
+        except Exception as e:
+            print(f"Error processing dataset {dataset_id}: {e}")
+            continue
 
-def wait_on_first_completed(futures):
-    """Wait for the first future to complete and return done and not done futures."""
-    done, not_done = concurrent.futures.wait(
-        futures, 
-        return_when=concurrent.futures.FIRST_COMPLETED
-    )
-    return done, list(not_done)
 
 if __name__ == "__main__":
     fire.Fire({
         "sglang": sglang,
         "vllm": vllm,
-        "tensorrt": tensorrt_llm
+        "merge": merge_datasets,
     })
