@@ -35,9 +35,6 @@ def visualize_distributions(model_dist, dataset_dist, model_top_tokens, model_to
     y_values = sorted_model[nonzero]
     
     max_index = vocab_size
-    colors = [cmap(idx/max_index) for idx in x_indices]
-    for i in range(len(x_indices)-1):
-        plt.fill_between(x_indices[i:i+2], y_values[i:i+2], color=colors[i], alpha=0.7)
     plt.plot(x_indices, y_values, color='black', linewidth=0.5, alpha=0.5)
     
     plt.title("Model Full Distribution")
@@ -55,11 +52,6 @@ def visualize_distributions(model_dist, dataset_dist, model_top_tokens, model_to
     nonzero = sorted_dataset > 0
     x_indices = np.arange(len(sorted_dataset))[nonzero]
     y_values = sorted_dataset[nonzero]
-    
-    colors = [cmap(idx/max_index) for idx in x_indices]
-    
-    for i in range(len(x_indices)-1):
-        plt.fill_between(x_indices[i:i+2], y_values[i:i+2], color=colors[i], alpha=0.7)
     plt.plot(x_indices, y_values, color='black', linewidth=0.5, alpha=0.5)
     
     plt.title("Dataset Full Distribution")
@@ -77,12 +69,12 @@ def visualize_distributions(model_dist, dataset_dist, model_top_tokens, model_to
     print("Graph saved to 'token_distribution_analysis.png'")
 
 
-def dist(model_name="google/gemma-2-2b", dataset_name="seonglae/faithful-gemma2-2b", column="text", split="train", topk=10):
+def dist(model_name="google/gemma-2-2b", dataset="seonglae/faithful-gemma2-2b", column="text", split="train", topk=10):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name)
     model.eval()
     
-    ds = load_dataset(dataset_name, split=split)
+    ds = load_dataset(dataset, split=split)
     
     total_tokens = 0
     total_examples = 0
@@ -92,6 +84,7 @@ def dist(model_name="google/gemma-2-2b", dataset_name="seonglae/faithful-gemma2-
     max_tokens = None
     first_tokens = []
     all_tokens = []
+    unique_sequences = set()
     batch_size = 16384
     total_examples_count = len(ds)
     
@@ -116,9 +109,10 @@ def dist(model_name="google/gemma-2-2b", dataset_name="seonglae/faithful-gemma2-
         max_tokens = batch_max if max_tokens is None else max(max_tokens, batch_max) if batch_max is not None else max_tokens
         
         for ids in batch_encodings['input_ids']:
-            if len(ids) > 0:
+            if len(ids) > 1:
                 first_tokens.append(ids[1])
                 all_tokens.extend(ids)
+                unique_sequences.add(tuple(ids))
     
     variance = m2 / (total_examples - 1) if total_examples > 1 else 0
     print("\nToken Statistics:")
@@ -126,6 +120,7 @@ def dist(model_name="google/gemma-2-2b", dataset_name="seonglae/faithful-gemma2-
     print("Total tokens:", total_tokens)
     print("Unique tokens used in all positions:", len(set(all_tokens)))
     print("Unique tokens in first position:", len(set(first_tokens)))
+    print("Total number of unique sequences:", len(unique_sequences))
     print("Mean token count:", mean)
     print("Token count std:", variance ** 0.5)
     print("Min sequence length:", min_tokens)
