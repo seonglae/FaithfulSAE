@@ -26,7 +26,7 @@ def parse_args():
     parser.add_argument(
         "--source_models",
         nargs="+",
-        default=["pythia-2.8b_harmful"],
+        default=["natural-instruction"],
         help="Source models that generated the datasets",
     )
     parser.add_argument(
@@ -185,7 +185,7 @@ def train_sae(
 def main():
     args = parse_args()
 
-    dataset_files = ["datasets/more-harmful_dataset.jsonl"]
+    dataset_files = ["datasets/better-natural-instructions_dataset.jsonl"]
 
     # Seeds to use for training
     seeds = list(range(args.num_seeds))
