@@ -45,6 +45,7 @@ def analyze_seed_sensitivity(
     source_models=["1.4b"],
     layers=[7, 15],
     seeds=[0, 1],
+    threshold=0.7,
     device="cuda",
     use_decoder=True,
     batch_size=4096,
@@ -57,6 +58,7 @@ def analyze_seed_sensitivity(
         source_models: List of source model names
         layers: List of layer indices to analyze
         seeds: List of seeds to compare
+        threshold: Threshold
         device: Device to use for computation
         use_decoder: Whether to use decoder weights (True) or encoder weights (False)
         batch_size: Batch size for similarity computation
@@ -94,13 +96,16 @@ def analyze_seed_sensitivity(
                     )
 
                     # Compute and store mean similarity score
-                    mean_similarity = cost_matrix[row_indices, col_indices].mean().item()
+                    mean_similarity = cost_matrix[row_indices, col_indices]
+
+                    # Compute the ratio over threshold
+                    ratio_over_threshold = (mean_similarity > threshold).float().mean().item()
 
                     # Save results
-                    score_dict = {run_name: mean_similarity}
+                    score_dict = {run_name: ratio_over_threshold}
                     index_dict = {run_name: (row_indices, col_indices)}
 
-                    print(f"{run_name}: {mean_similarity}")
+                    print(f"{run_name}: {ratio_over_threshold}")
                     scores.append(score_dict)
                     indices.append(index_dict)
 
@@ -114,9 +119,10 @@ if __name__ == "__main__":
     # Configuration
     config = {
         "target_models": ["pythia-1.4b", "pythia-2.8b"],
-        "source_models": ["datasets/more-harmful"],
+        "source_models": ["datasets/better-natural-instructions"],
         "layers": [7, 15],
         "seeds": [0, 1],  # Add all your seeds here
+        "threshold": 0.7,
         "device": "cuda",
         "use_decoder": True,
         "batch_size": 4096,  # Adjust based on available memory

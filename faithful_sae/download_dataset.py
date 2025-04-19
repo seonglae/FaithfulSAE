@@ -12,25 +12,18 @@ def download_dataset(file, output_file, target_tokens):
         dataset = load_dataset(file, split="train", streaming=True)
 
         # Shuffle the dataset
-        # dataset = dataset.shuffle(seed=SHUFFLE_SEED)
+        dataset = dataset.shuffle(seed=SHUFFLE_SEED)
 
         # Loop through the dataset
         counter = 0
         tokens = 0
         for line in tqdm(dataset, desc="Sampled lines", unit=" lines"):
-            # Get each values for all keys and preprocess
-            instruction = preprocess_text(line["instruction"])
-            input = preprocess_text(line["input"])
-            output = preprocess_text(line["output"])
-
-            # Construct the text in the format of "Q:\n\nQustion?\n\nA:\n\nAnswer"
-
-            # Use instruction for Question of input is empty or instruction start with "Jenna, "
-            if input == "" or "Jenna, " in line["instruction"]:
-                text = f"Q:\n\n{instruction}\n\nA:\n\n{output}"
-            # Use input otherwise
+            if file == "aifeifei798/merged_uncensored_alpaca":
+                text = get_harmful_text(line)
+            elif file == "Muennighoff/natural-instructions":
+                text = get_natural_instruct_text(line)
             else:
-                text = f"Q:\n\n{input}\n\nA:\n\n{output}"
+                text = line["text"]
 
             # Create a data
             data = {"id": counter, "text": text}
@@ -48,6 +41,31 @@ def download_dataset(file, output_file, target_tokens):
                 break
 
     print(f"File saved as {output_file} with {tokens} tokens")
+
+def get_natural_instruct_text(line):
+    definition = line["definition"]
+    inputs = line["inputs"]
+    targets = line["targets"]
+
+    text = f"Q:\n\n{definition}\n\n{inputs}\n\nA:\n\n{targets}"
+    return text
+
+
+def get_harmful_text(line):
+    # Get each values for all keys and preprocess
+    instruction = preprocess_text(line["instruction"])
+    input = preprocess_text(line["input"])
+    output = preprocess_text(line["output"])
+
+    # Construct the text in the format of "Q:\n\nQustion?\n\nA:\n\nAnswer"
+
+    # Use instruction for Question of input is empty or instruction start with "Jenna, "
+    if input == "" or "Jenna, " in line["instruction"]:
+        text = f"Q:\n\n{instruction}\n\nA:\n\n{output}"
+    # Use input otherwise
+    else:
+        text = f"Q:\n\n{input}\n\nA:\n\n{output}"
+    return text
 
 
 def preprocess_text(text):
@@ -79,11 +97,11 @@ if __name__ == "__main__":
     TARGET_TOKENS = 100_000_000
 
     # Define the output filename
-    output_filename = "more-harmful_dataset.jsonl"
+    output_filename = "better-natural-instructions_dataset.jsonl"
     output_path = os.path.join(DATASET_PATH, output_filename)
 
     # Path of the dataset
-    dataset = "aifeifei798/merged_uncensored_alpaca"
+    dataset = "Muennighoff/natural-instructions"
 
     # Get the tokenizer
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
