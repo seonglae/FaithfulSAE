@@ -69,7 +69,7 @@ def visualize_distributions(model_dist, dataset_dist, model_top_tokens, model_to
     print("Graph saved to 'token_distribution_analysis.png'")
 
 
-def dist(model_name="google/gemma-2-2b", dataset="seonglae/faithful-gemma2-2b", column="text", split="train", topk=10):
+def dist(model_name="google/gemma-2-2b", dataset="seonglae/faithful-gemma2-2b", column="text", split="train", topk=10, bos_tokenizer=False):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name)
     model.eval()
@@ -108,9 +108,10 @@ def dist(model_name="google/gemma-2-2b", dataset="seonglae/faithful-gemma2-2b", 
         min_tokens = batch_min if min_tokens is None else min(min_tokens, batch_min) if batch_min is not None else min_tokens
         max_tokens = batch_max if max_tokens is None else max(max_tokens, batch_max) if batch_max is not None else max_tokens
         
+        first_index = 1 if bos_tokenizer else 0
         for ids in batch_encodings['input_ids']:
             if len(ids) > 1:
-                first_tokens.append(ids[1])
+                first_tokens.append(ids[first_index])
                 all_tokens.extend(ids)
                 unique_sequences.add(tuple(ids))
     

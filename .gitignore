@@ -2,3 +2,4 @@
 *.png
 task
 temp.py
+__pycache__
