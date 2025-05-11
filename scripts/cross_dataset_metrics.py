@@ -24,7 +24,7 @@ from convert import convert
 # Make tokenizer global so it's accessible in all functions
 tokenizer = None
 
-def get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seed, seq_len, steps, faithful, tiny, openweb, red, pile):
+def get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seed, seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional):
     dataset_ids["faithful"] = f"seonglae/{faithful}"
     model_name = llm_id.split('/')[-1]
     if model_name == "gpt2":
@@ -35,6 +35,8 @@ def get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seed, s
         "fineweb": f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_fineweb_{seq_len}_{steps}",
         "faithful": f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_{faithful}_{seq_len}_{steps}"
     }
+    if additional:
+        sae_folders["additional"] = f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_{additional}_{seq_len}_{steps}"
     tiny = True
     openweb = True
     if tiny:
@@ -45,6 +47,12 @@ def get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seed, s
         sae_folders["redpajama"] = f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_redpajama_{seq_len}_{steps}"
     if pile:
         sae_folders["pile"] = f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_pile-uncopyrighted_{seq_len}_{steps}"
+    if supernatural:
+        sae_folders["supernatural"] = f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_supernatural-instructions-2m_{seq_len}_{steps}"
+    if alpaca:
+        sae_folders["alpaca"] = f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_merged_uncensored_alpaca_{seq_len}_{steps}"
+    if openinstruct:
+        sae_folders["openinstruct"] = f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_open-instruct-uncensored-alpaca_{seq_len}_{steps}"
     return sae_folders
 
 # Dataset options with actual paths

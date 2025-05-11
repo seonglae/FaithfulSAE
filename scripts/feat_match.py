@@ -110,7 +110,8 @@ def viz_tsne(data, base_name, results_folder, perplexity, max_iter=5000, folder_
     plt.close()
 
 def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site="resid_pre", layer=12, seeds=[42, 49], seq_len=512, lr=0.0002, pile=False, tiny=False, openweb=False, red=False,
-               topk=48, dict_size=14336, num_sequences=100, steps=195311, faithful="faithful-llama3.2-1b", results_folder='results', local=True, threshold=0.7, batch_size=4096, k=4):
+               topk=48, dict_size=14336, num_sequences=100, steps=195311, faithful="faithful-llama3.2-1b", results_folder='results', local=True, threshold=0.7, batch_size=4096, k=4,
+               supernatural=False, alpaca=False, openinstruct=False, additional=None):
     """
     Compare SAE models pairwise and generate similarity distribution plots.
     Also computes the ratio of decoder feature top1 activations above the threshold.
@@ -120,9 +121,9 @@ def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site
       - UMAP plots under results/umap
     sae1_list and sae2_list: Comma-separated lists (or lists) of SAE identifiers.
     """
-    sae1_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[0], seq_len, steps, faithful, tiny, openweb, red, pile)
+    sae1_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[0], seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional)
     sae1_list = list(sae1_list.values())
-    sae2_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[1], seq_len, steps, faithful, tiny, openweb, red, pile)
+    sae2_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[1], seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional)
     sae2_list = list(sae2_list.values())
 
     # Create output folders if they don't exist
