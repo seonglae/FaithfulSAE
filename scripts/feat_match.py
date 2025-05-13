@@ -1,3 +1,4 @@
+import random
 from os import makedirs
 from os.path import join, isfile, isdir
 import torch
@@ -13,6 +14,10 @@ import umap
 from sklearn.manifold import TSNE
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from sae_lens import SAE
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from sklearn.metrics import f1_score as sklearn_f1_score
+from collections import defaultdict, Counter as PythonCounter
 
 from convert import convert
 from cross_dataset_metrics import get_sae_folders
@@ -20,6 +25,52 @@ from cross_dataset_metrics import get_sae_folders
 # Set device
 device = "cuda" if torch.cuda.is_available() else "cpu"
 device = "mps" if torch.backends.mps.is_available() else device
+
+class LogisticProbe(torch.nn.Module):
+    """Logistic regression probe for classification tasks"""
+    def __init__(self, input_dim, num_classes, dtype=torch.float32):
+        super().__init__()
+        self.linear = torch.nn.Linear(input_dim, num_classes).to(device)
+        self.linear = self.linear.to(dtype)
+        
+    def forward(self, x, labels=None):
+        logits = self.linear(x)
+        if labels is not None:
+            return logits
+        return logits
+
+class Counter:
+    """Custom counter for tracking predictions"""
+    def __init__(self, num_classes):
+        self.total = 0
+        self.correct = 0
+        self.predictions = []
+        self.ground_truth = []
+        
+    def update(self, predictions):
+        """Update counter with batch of predictions"""
+        self.total += len(predictions[0])
+        self.correct += predictions[1]
+        self.predictions.extend(predictions[2])
+        self.ground_truth.extend(predictions[3])
+        
+    def most_common(self, n):
+        """Return most common elements (mocking PythonCounter's interface)"""
+        if n == 1:
+            return [("accuracy", self.correct)]
+        return [("accuracy", self.correct)]
+
+def loss_func(logits, labels):
+    """Cross entropy loss for classification"""
+    labels = labels.to(device)
+    return torch.nn.functional.cross_entropy(logits, labels)
+
+def correct_func(logits, labels):
+    """Calculate prediction accuracy"""
+    labels = labels.to(device)
+    preds = torch.argmax(logits, dim=1)
+    correct = (preds == labels).sum().item()
+    return (labels.cpu().tolist(), correct, preds.cpu().tolist(), labels.cpu().tolist())
 
 def load_sae(sae_id, local, site, device):
     # Load SAE from pretrained hub or local checkpoint
@@ -109,9 +160,298 @@ def viz_tsne(data, base_name, results_folder, perplexity, max_iter=5000, folder_
     plt.savefig(save_file)
     plt.close()
 
+def get_fake_features(llm_id, sae: SAE, n_tokens=100_000, threshold=0.05, dtype=torch.bfloat16, layer=12, batch_size=4):
+    """
+    Detect fake features that activate on random token sequences.
+    
+    A feature is considered "fake" if it fires on more than threshold% of out-of-distribution samples.
+    
+    Args:
+        llm_id: ID of the language model
+        sae: The SAE model
+        n_tokens: Number of tokens to process
+        threshold: Threshold for considering a feature as "fake"
+        dtype: Data type for model
+        layer: Model layer to use
+        batch_size: Batch size for processing
+        
+    Returns:
+        List of fake features with their activation frequencies
+    """
+    print("Detecting fake features...")
+    llm = AutoModelForCausalLM.from_pretrained(llm_id, device_map="auto", torch_dtype=dtype).eval()
+    tokenizer = AutoTokenizer.from_pretrained(llm_id)
+    tokenizer.pad_token = tokenizer.eos_token
+    
+    # Calculate sequences needed
+    seq_len = sae.cfg.seq_len if hasattr(sae.cfg, 'seq_len') else 512
+    n_seqs = max(1, n_tokens // seq_len)
+    
+    # Initialize counter for feature activations
+    feature_counts = torch.zeros(sae.cfg.d_sae, dtype=torch.float32, device=device)
+    vocab_list = list(tokenizer.get_vocab().keys())
+    total_sequences = 0
+    
+    with torch.no_grad():
+        for batch_idx in tqdm(range(0, n_seqs, batch_size), desc="Generating OOD samples"):
+            current_batch_size = min(batch_size, n_seqs - batch_idx)
+            if current_batch_size <= 0:
+                break
+                
+            # Generate random token sequences
+            batch_tokens = []
+            for _ in range(current_batch_size):
+                # Create a sequence of random tokens
+                random_tokens = [random.choice(vocab_list) for _ in range(min(16, seq_len))]
+                batch_tokens.append(" ".join(random_tokens))
+            
+            # Tokenize and get model activations
+            inputs = tokenizer(batch_tokens, return_tensors='pt', padding=True, truncation=True, max_length=seq_len).to(device)
+            outputs = llm(inputs.input_ids, output_hidden_states=True)
+            
+            # Get activations from the specified layer
+            hidden_states = outputs.hidden_states[layer]
+            
+            # Process each sequence in the batch
+            for seq_idx in range(current_batch_size):
+                # Get sequence length (excluding padding)
+                seq_length = (inputs.input_ids[seq_idx] != tokenizer.pad_token_id).sum().item()
+                if seq_length == 0:
+                    continue
+                    
+                # Get activations for this sequence
+                activations = hidden_states[seq_idx, :seq_length]
+                
+                # Encode with SAE to get sparse features
+                features = sae.encode(activations)
+                
+                # Binary indicator of feature firing (threshold at 1.0)
+                binary_features = (features.sum(dim=0) > 0.0).float()
+                
+                # Accumulate counts
+                feature_counts += binary_features
+                total_sequences += 1
+    
+    # Calculate the proportion of samples where each feature fired
+    if total_sequences > 0:
+        feature_proportions = feature_counts / total_sequences
+    else:
+        feature_proportions = torch.zeros_like(feature_counts)
+        
+    # Find fake features (those that fire on more than threshold of samples)
+    fake_feature_mask = feature_proportions > threshold
+    fake_feature_indices = torch.nonzero(fake_feature_mask).squeeze().cpu().tolist()
+    
+    # Handle the case of a single fake feature
+    if not isinstance(fake_feature_indices, list):
+        fake_feature_indices = [fake_feature_indices]
+    
+    # Create list of (feature_idx, activation_frequency) tuples
+    fake_features = [(idx, feature_proportions[idx].item()) 
+                   for idx in fake_feature_indices]
+    
+    # Sort by activation frequency (highest first)
+    fake_features.sort(key=lambda x: x[1], reverse=True)
+    
+    print(f"Found {len(fake_features)} fake features out of {sae.cfg.d_sae} total features")
+    return fake_features
+
+def prove_performance(llm_id, sae, dtype=torch.bfloat16, layer=12, batch_size=4, dataset_id="sst2", subset=None, test_split="test", train_split="train", dataset_labels=2, input_col="sentence", label_col="label", lr=0.0002, train_limit=1000, test_limit=500):
+    """
+    Evaluate performance of different feature representations on downstream classification tasks.
+    
+    Three approaches are compared:
+    1. Baseline: Using the original hidden states
+    2. SAE: Using the sparse expanded features
+    3. Recon: Using the reconstructed features from SAE
+    
+    Args:
+        llm_id: Language model ID
+        sae: SAE model
+        dtype: Data type for model
+        layer: Model layer to use
+        batch_size: Processing batch size
+        dataset_id: HuggingFace dataset ID
+        subset: Dataset subset name
+        test_split: Test split name
+        train_split: Train split name
+        dataset_labels: Number of labels in dataset
+        input_col: Input text column name
+        label_col: Label column name
+        lr: Learning rate for probing classifier
+        
+    Returns:
+        Evaluation metrics for baseline, SAE, and reconstructed features
+    """
+    print(f"Evaluating downstream performance on {dataset_id}...")
+    
+    # Load model
+    try:
+        llm = AutoModelForCausalLM.from_pretrained(llm_id, device_map="auto", torch_dtype=dtype).eval()
+        tokenizer = AutoTokenizer.from_pretrained(llm_id)
+        tokenizer.pad_token = tokenizer.eos_token
+    except Exception as e:
+        print(f"Failed to load model: {e}")
+        return 0, 0, 0, 0, 0, 0
+        
+    # Load dataset
+    try:
+        if subset:
+            train_dataset = load_dataset(dataset_id, subset, split=train_split)
+            test_dataset = load_dataset(dataset_id, subset, split=test_split)
+        else:
+            train_dataset = load_dataset(dataset_id, split=train_split)
+            test_dataset = load_dataset(dataset_id, split=test_split)
+            
+        # Take a limited number of examples to speed up testing
+        train_dataset = train_dataset.select(range(min(train_limit, len(train_dataset))))
+        test_dataset = test_dataset.select(range(min(test_limit, len(test_dataset))))
+    except Exception as e:
+        print(f"Failed to load dataset: {e}")
+        return 0, 0, 0, 0, 0, 0
+        
+    # Create data loaders
+    def collate_fn(batch):
+        texts = [item[input_col] for item in batch]
+        labels = [item[label_col] for item in batch]
+        return texts, torch.tensor(labels, dtype=torch.long)
+        
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    
+    # Initialize probing classifiers
+    baseline_probe = LogisticProbe(sae.cfg.d_in, dataset_labels, dtype=dtype)
+    sae_probe = LogisticProbe(sae.cfg.d_sae, dataset_labels, dtype=dtype)
+    recon_probe = LogisticProbe(sae.cfg.d_in, dataset_labels, dtype=dtype)
+    
+    # Initialize optimizers
+    baseline_optimizer = torch.optim.Adam(baseline_probe.parameters(), lr=lr)
+    sae_optimizer = torch.optim.Adam(sae_probe.parameters(), lr=lr)
+    recon_optimizer = torch.optim.Adam(recon_probe.parameters(), lr=lr)
+    
+    # Training loop
+    baseline_probe.train()
+    sae_probe.train()
+    recon_probe.train()
+    for texts, labels in tqdm(train_loader, desc="Training"):
+        # Tokenize inputs
+        encoded_inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+        
+        # Get model activations
+        with torch.no_grad():
+            outputs = llm(encoded_inputs.input_ids, output_hidden_states=True)
+            
+            # Get last token representation for each sequence
+            seq_lengths = encoded_inputs.attention_mask.sum(dim=1) - 1  # -1 for 0-indexed
+            batch_size = encoded_inputs.input_ids.shape[0]
+            
+            # Extract activations from specified layer
+            layer_activations = outputs.hidden_states[layer]
+            
+            # Get the representation of the last token for each sequence
+            activations = torch.stack([layer_activations[i, seq_lengths[i]] for i in range(batch_size)])
+            
+            # Get SAE features and reconstructions
+            features = sae.encode(activations)
+            reconstructions = sae.decode(features)
+        
+        # Baseline probe
+        baseline_optimizer.zero_grad()
+        baseline_logits = baseline_probe(activations, labels)
+        baseline_loss = loss_func(baseline_logits, labels)
+        baseline_loss.backward()
+        baseline_optimizer.step()
+        
+        # SAE probe
+        sae_optimizer.zero_grad()
+        sae_logits = sae_probe(features, labels)
+        sae_loss = loss_func(sae_logits, labels)
+        sae_loss.backward()
+        sae_optimizer.step()
+        
+        # Reconstruction probe
+        recon_optimizer.zero_grad()
+        recon_logits = recon_probe(reconstructions, labels)
+        recon_loss = loss_func(recon_logits, labels)
+        recon_loss.backward()
+        recon_optimizer.step()
+    
+    # Evaluation
+    baseline_probe.eval()
+    sae_probe.eval()
+    recon_probe.eval()
+    
+    baseline_counter = Counter(dataset_labels)
+    sae_counter = Counter(dataset_labels)
+    recon_counter = Counter(dataset_labels)
+    
+    all_baseline_preds = []
+    all_sae_preds = []
+    all_recon_preds = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for texts, labels in tqdm(test_loader, desc="Evaluating"):
+            # Tokenize inputs
+            encoded_inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+            
+            # Get model activations
+            outputs = llm(encoded_inputs.input_ids, output_hidden_states=True)
+            
+            # Get last token representation for each sequence
+            seq_lengths = encoded_inputs.attention_mask.sum(dim=1) - 1  # -1 for 0-indexed
+            batch_size = encoded_inputs.input_ids.shape[0]
+            
+            # Extract activations from specified layer
+            layer_activations = outputs.hidden_states[layer]
+            
+            # Get the representation of the last token for each sequence
+            activations = torch.stack([layer_activations[i, seq_lengths[i]] for i in range(batch_size)])
+            
+            # Get SAE features and reconstructions
+            features = sae.encode(activations)
+            reconstructions = sae.decode(features)
+            
+            # Get predictions
+            baseline_logits = baseline_probe(activations, labels)
+            sae_logits = sae_probe(features, labels)
+            recon_logits = recon_probe(reconstructions, labels)
+            
+            # Update counters
+            baseline_correct = correct_func(baseline_logits, labels)
+            sae_correct = correct_func(sae_logits, labels)
+            recon_correct = correct_func(recon_logits, labels)
+            
+            baseline_counter.update(baseline_correct)
+            sae_counter.update(sae_correct)
+            recon_counter.update(recon_correct)
+            
+            # Store predictions and labels for F1 score
+            all_baseline_preds.extend(baseline_correct[2])
+            all_sae_preds.extend(sae_correct[2])
+            all_recon_preds.extend(recon_correct[2])
+            all_labels.extend(labels.cpu().tolist())
+    
+    # Calculate accuracy
+    baseline_acc = baseline_counter.correct / baseline_counter.total if baseline_counter.total > 0 else 0
+    sae_acc = sae_counter.correct / sae_counter.total if sae_counter.total > 0 else 0
+    recon_acc = recon_counter.correct / recon_counter.total if recon_counter.total > 0 else 0
+    
+    # Calculate F1 scores
+    baseline_f1 = sklearn_f1_score(all_labels, all_baseline_preds, average='macro')
+    sae_f1 = sklearn_f1_score(all_labels, all_sae_preds, average='macro')
+    recon_f1 = sklearn_f1_score(all_labels, all_recon_preds, average='macro')
+    
+    print(f"Evaluation results on {dataset_id}:")
+    print(f"  Baseline: Acc={baseline_acc:.4f}, F1={baseline_f1:.4f}")
+    print(f"  SAE: Acc={sae_acc:.4f}, F1={sae_f1:.4f}")
+    print(f"  Recon: Acc={recon_acc:.4f}, F1={recon_f1:.4f}")
+    
+    return baseline_acc, sae_acc, recon_acc, baseline_f1, sae_f1, recon_f1
+
 def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site="resid_pre", layer=12, seeds=[42, 49], seq_len=512, lr=0.0002, pile=False, tiny=False, openweb=False, red=False,
                topk=48, dict_size=14336, num_sequences=100, steps=195311, faithful="faithful-llama3.2-1b", results_folder='results', local=True, threshold=0.7, batch_size=4096, k=4,
-               supernatural=False, alpaca=False, openinstruct=False, additional=None):
+               supernatural=False, alpaca=False, openinstruct=False, additional=None, flan=False):
     """
     Compare SAE models pairwise and generate similarity distribution plots.
     Also computes the ratio of decoder feature top1 activations above the threshold.
@@ -121,9 +461,9 @@ def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site
       - UMAP plots under results/umap
     sae1_list and sae2_list: Comma-separated lists (or lists) of SAE identifiers.
     """
-    sae1_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[0], seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional)
+    sae1_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[0], seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional, flan)
     sae1_list = list(sae1_list.values())
-    sae2_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[1], seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional)
+    sae2_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[1], seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional, flan)
     sae2_list = list(sae2_list.values())
 
     # Create output folders if they don't exist
@@ -137,6 +477,8 @@ def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site
     # Process each pair of SAE models
     top1_ratios = {}
     hungarian_ratios = {}
+    fake_feature_ratios = {}
+    downstream_prove_acc = {}
     
     for sae_id1, sae_id2 in zip(sae1_list, sae2_list):
         print(f"Processing pair: {sae_id1} vs {sae_id2}")
@@ -225,6 +567,86 @@ def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site
             viz_umap(data, sae_id2, results_folder)
 
         print(f"Plots saved for pair: {base_name}")
+
+        
+        # Fake Feature Analysis
+        print(f"\n==== Analyzing Fake Features for {base_name} ====")
+        try:
+            fake_features_1 = get_fake_features(llm_id, sae1, n_tokens=100_000, threshold=0.05, dtype=torch.bfloat16, layer=layer, batch_size=4)
+            fake_features_2 = get_fake_features(llm_id, sae2, n_tokens=100_000, threshold=0.05, dtype=torch.bfloat16, layer=layer, batch_size=4)
+            
+            fake_feature_count1 = len(fake_features_1)
+            fake_feature_count2 = len(fake_features_2)
+            fake_feature_count1_ratio = fake_feature_count1 / sae1.cfg.d_sae
+            fake_feature_count2_ratio = fake_feature_count2 / sae2.cfg.d_sae
+            
+            print(f"SAE 1 fake features: {fake_feature_count1}/{sae1.cfg.d_sae} ({fake_feature_count1_ratio:.2%})")
+            print(f"SAE 2 fake features: {fake_feature_count2}/{sae2.cfg.d_sae} ({fake_feature_count2_ratio:.2%})")
+            
+            # Store just the feature indices to keep the JSON file manageable
+            fake_feature_indices_1 = [feature[0] for feature in fake_features_1]
+            fake_feature_indices_2 = [feature[0] for feature in fake_features_2]
+            
+            fake_feature_ratios[base_name] = {
+                "fake_feature_count1": fake_feature_count1,
+                "fake_feature_count2": fake_feature_count2,
+                "fake_feature_ratio1": fake_feature_count1_ratio,
+                "fake_feature_ratio2": fake_feature_count2_ratio,
+                "d_sae1": sae1.cfg.d_sae,
+                "d_sae2": sae2.cfg.d_sae,
+                "fake_feature_indices1": fake_feature_indices_1,
+                "fake_feature_indices2": fake_feature_indices_2
+            }
+            
+            # Save intermediate results
+            json_path = join(results_folder, 'df', 'fake_features.json')
+            with open(json_path, 'w') as f:
+                json.dump(fake_feature_ratios, f, indent=2)
+                
+        except Exception as e:
+            print(f"Error in fake feature analysis: {e}")
+            fake_feature_ratios[base_name] = {"error": str(e)}
+
+        # Downstream Prove Performance
+        print(f"\n==== Evaluating Downstream Performance for {base_name} ====")
+        downstream_prove_acc[base_name] = {}
+        
+        classification_datasets = [
+            {"dataset_id": "stanfordnlp/sst2", "subset": None, "test_split": "validation", "train_split": "train", "dataset_labels": 2, "input_col": "sentence", "label_col": "label"},
+            {"dataset_id": "nyu-mll/glue", "subset": "cola", "test_split": "validation", "train_split": "train", "dataset_labels": 2, "input_col": "sentence", "label_col": "label"},
+            {"dataset_id": "imdb", "subset": None, "test_split": "test", "train_split": "train", "dataset_labels": 2, "input_col": "text", "label_col": "label"},
+            {"dataset_id": "ag_news", "subset": None, "test_split": "test", "train_split": "train", "dataset_labels": 4, "input_col": "text", "label_col": "label"},
+            {"dataset_id": "yelp_polarity", "subset": None, "test_split": "test", "train_split": "train", "dataset_labels": 2, "input_col": "text", "label_col": "label"},
+        ]
+        
+        for dataset_cfg in classification_datasets:
+            dataset_name = f"{dataset_cfg['dataset_id']}"
+            if dataset_cfg["subset"]:
+                dataset_name += f"/{dataset_cfg['subset']}"
+                
+            print(f"\nEvaluating {dataset_name}...")
+            try:
+                baseline_acc, sae_acc, recon_acc, baseline_f1, sae_f1, recon_f1 = prove_performance(
+                    llm_id, sae1, dtype=torch.bfloat16, layer=layer, batch_size=4, **dataset_cfg
+                )
+                
+                downstream_prove_acc[base_name][dataset_name] = {
+                    "baseline_acc": baseline_acc,
+                    "sae_acc": sae_acc,
+                    "recon_acc": recon_acc,
+                    "baseline_f1": baseline_f1,
+                    "sae_f1": sae_f1,
+                    "recon_f1": recon_f1
+                }
+                
+                # Save intermediate results after each dataset
+                json_path = join(results_folder, 'df', 'downstream_prove_acc.json')
+                with open(json_path, 'w') as f:
+                    json.dump(downstream_prove_acc, f, indent=2)
+                    
+            except Exception as e:
+                print(f"Error evaluating {dataset_name}: {e}")
+                downstream_prove_acc[base_name][dataset_name] = {"error": str(e)}
 
 if __name__ == '__main__':
     fire.Fire(feat_match)
