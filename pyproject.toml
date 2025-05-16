@@ -1,0 +1,17 @@
+[project]
+name = "faithful-sae"
+version = "0.1.0"
+description = "Faithful Sparse Autoencoder (SAE) training with self-generated datasets for improved feature interpretability"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets>=2.21.0",
+    "pandas>=2.2.3",
+    "sae-lens>=5.10.2",
+    "scipy>=1.15.3",
+    "seaborn>=0.13.2",
+    "tqdm>=4.67.1",
+    "transformers>=4.51.3",
+    "umap-learn>=0.5.7",
+    "vllm>=0.8.5.post1",
+]
