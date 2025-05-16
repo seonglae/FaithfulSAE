@@ -3,3 +3,10 @@
 task
 temp.py
 __pycache__
+checkpoints
+datasets/*.jsonl
+sparsify
+wandb
+*.csv
+*.pkl
+__pycache__
