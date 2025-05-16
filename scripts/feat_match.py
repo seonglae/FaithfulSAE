@@ -160,7 +160,7 @@ def viz_tsne(data, base_name, results_folder, perplexity, max_iter=5000, folder_
     plt.savefig(save_file)
     plt.close()
 
-def get_fake_features(llm_id, sae: SAE, n_tokens=100_000, threshold=0.05, dtype=torch.bfloat16, layer=12, batch_size=4):
+def get_fake_features(llm_id, sae: SAE, n_tokens, threshold, dtype=torch.bfloat16, layer=12, batch_size=4):
     """
     Detect fake features that activate on random token sequences.
     
@@ -184,16 +184,16 @@ def get_fake_features(llm_id, sae: SAE, n_tokens=100_000, threshold=0.05, dtype=
     tokenizer.pad_token = tokenizer.eos_token
     
     # Calculate sequences needed
-    seq_len = sae.cfg.seq_len if hasattr(sae.cfg, 'seq_len') else 512
+    seq_len = sae.cfg.context_size
     n_seqs = max(1, n_tokens // seq_len)
     
     # Initialize counter for feature activations
     feature_counts = torch.zeros(sae.cfg.d_sae, dtype=torch.float32, device=device)
-    vocab_list = list(tokenizer.get_vocab().keys())
+    vocab_list = list(tokenizer.get_vocab().values())
     total_sequences = 0
     
     with torch.no_grad():
-        for batch_idx in tqdm(range(0, n_seqs, batch_size), desc="Generating OOD samples"):
+        for batch_idx in tqdm(range(0, n_seqs, batch_size), desc="Inferencing OOD samples"):
             current_batch_size = min(batch_size, n_seqs - batch_idx)
             if current_batch_size <= 0:
                 break
@@ -202,41 +202,35 @@ def get_fake_features(llm_id, sae: SAE, n_tokens=100_000, threshold=0.05, dtype=
             batch_tokens = []
             for _ in range(current_batch_size):
                 # Create a sequence of random tokens
-                random_tokens = [random.choice(vocab_list) for _ in range(min(16, seq_len))]
-                batch_tokens.append(" ".join(random_tokens))
+                random_tokens = [random.choice(vocab_list) for _ in range(seq_len)]
+                random_tokens[0] = tokenizer.encode(tokenizer.bos_token)[0]
+                batch_tokens.append(torch.tensor(random_tokens).to(device))
             
             # Tokenize and get model activations
-            inputs = tokenizer(batch_tokens, return_tensors='pt', padding=True, truncation=True, max_length=seq_len).to(device)
-            outputs = llm(inputs.input_ids, output_hidden_states=True)
+            batch_tokens = torch.stack(batch_tokens)
+            outputs = llm(batch_tokens, output_hidden_states=True)
             
             # Get activations from the specified layer
             hidden_states = outputs.hidden_states[layer]
             
             # Process each sequence in the batch
             for seq_idx in range(current_batch_size):
-                # Get sequence length (excluding padding)
-                seq_length = (inputs.input_ids[seq_idx] != tokenizer.pad_token_id).sum().item()
-                if seq_length == 0:
-                    continue
-                    
-                # Get activations for this sequence
-                activations = hidden_states[seq_idx, :seq_length]
+                # Exclude the first meaningless token
+                activations = hidden_states[seq_idx, 1:]
                 
                 # Encode with SAE to get sparse features
                 features = sae.encode(activations)
                 
                 # Binary indicator of feature firing (threshold at 1.0)
-                binary_features = (features.sum(dim=0) > 0.0).float()
-                
+                binary_features = (features > 1.0).float()
+                sum_binary_features = binary_features.sum(dim=0)
+
                 # Accumulate counts
-                feature_counts += binary_features
+                feature_counts += sum_binary_features
                 total_sequences += 1
     
     # Calculate the proportion of samples where each feature fired
-    if total_sequences > 0:
-        feature_proportions = feature_counts / total_sequences
-    else:
-        feature_proportions = torch.zeros_like(feature_counts)
+    feature_proportions = feature_counts / n_tokens
         
     # Find fake features (those that fire on more than threshold of samples)
     fake_feature_mask = feature_proportions > threshold
@@ -256,7 +250,7 @@ def get_fake_features(llm_id, sae: SAE, n_tokens=100_000, threshold=0.05, dtype=
     print(f"Found {len(fake_features)} fake features out of {sae.cfg.d_sae} total features")
     return fake_features
 
-def prove_performance(llm_id, sae, dtype=torch.bfloat16, layer=12, batch_size=4, dataset_id="sst2", subset=None, test_split="test", train_split="train", dataset_labels=2, input_col="sentence", label_col="label", lr=0.0002, train_limit=1000, test_limit=500):
+def prove_performance(llm_id, sae, layer, dataset_id, dtype=torch.bfloat16, batch_size=4, subset=None, test_split="test", train_split="train", dataset_labels=2, input_col="sentence", label_col="label", lr=0.001, dataset_limit=10000):
     """
     Evaluate performance of different feature representations on downstream classification tasks.
     
@@ -304,8 +298,8 @@ def prove_performance(llm_id, sae, dtype=torch.bfloat16, layer=12, batch_size=4,
             test_dataset = load_dataset(dataset_id, split=test_split)
             
         # Take a limited number of examples to speed up testing
-        train_dataset = train_dataset.select(range(min(train_limit, len(train_dataset))))
-        test_dataset = test_dataset.select(range(min(test_limit, len(test_dataset))))
+        train_dataset = train_dataset.shuffle(seed=42).select(range(min(dataset_limit, len(train_dataset))))
+        test_dataset = test_dataset.shuffle(seed=42).select(range(min(dataset_limit, len(test_dataset))))
     except Exception as e:
         print(f"Failed to load dataset: {e}")
         return 0, 0, 0, 0, 0, 0
@@ -335,7 +329,7 @@ def prove_performance(llm_id, sae, dtype=torch.bfloat16, layer=12, batch_size=4,
     recon_probe.train()
     for texts, labels in tqdm(train_loader, desc="Training"):
         # Tokenize inputs
-        encoded_inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+        encoded_inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=llm.config.max_position_embeddings).to(device)
         
         # Get model activations
         with torch.no_grad():
@@ -346,14 +340,13 @@ def prove_performance(llm_id, sae, dtype=torch.bfloat16, layer=12, batch_size=4,
             batch_size = encoded_inputs.input_ids.shape[0]
             
             # Extract activations from specified layer
-            layer_activations = outputs.hidden_states[layer]
-            
-            # Get the representation of the last token for each sequence
-            activations = torch.stack([layer_activations[i, seq_lengths[i]] for i in range(batch_size)])
-            
-            # Get SAE features and reconstructions
+            activations = outputs.hidden_states[layer]
             features = sae.encode(activations)
             reconstructions = sae.decode(features)
+
+            activations = torch.stack([activations[i, -seq_lengths[i]:].mean(dim=0) for i in range(batch_size)])
+            features = torch.stack([features[i, -seq_lengths[i]:].mean(dim=0) for i in range(batch_size)])
+            reconstructions = torch.stack([reconstructions[i, -seq_lengths[i]:].mean(dim=0) for i in range(batch_size)])
         
         # Baseline probe
         baseline_optimizer.zero_grad()
@@ -393,26 +386,26 @@ def prove_performance(llm_id, sae, dtype=torch.bfloat16, layer=12, batch_size=4,
     with torch.no_grad():
         for texts, labels in tqdm(test_loader, desc="Evaluating"):
             # Tokenize inputs
-            encoded_inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+            encoded_inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=llm.config.max_position_embeddings).to(device)
             
             # Get model activations
             outputs = llm(encoded_inputs.input_ids, output_hidden_states=True)
             
-            # Get last token representation for each sequence
-            seq_lengths = encoded_inputs.attention_mask.sum(dim=1) - 1  # -1 for 0-indexed
+            # Get sequence and batch length
+            seq_lengths = encoded_inputs.attention_mask.sum(dim=1)  # -1 for 0-indexed
             batch_size = encoded_inputs.input_ids.shape[0]
             
             # Extract activations from specified layer
-            layer_activations = outputs.hidden_states[layer]
-            
-            # Get the representation of the last token for each sequence
-            activations = torch.stack([layer_activations[i, seq_lengths[i]] for i in range(batch_size)])
+            activations = outputs.hidden_states[layer]
             
             # Get SAE features and reconstructions
             features = sae.encode(activations)
             reconstructions = sae.decode(features)
             
-            # Get predictions
+            activations = torch.stack([activations[i, -seq_lengths[i]:].mean(dim=0) for i in range(batch_size)])
+            features = torch.stack([features[i, -seq_lengths[i]:].mean(dim=0) for i in range(batch_size)])
+            reconstructions = torch.stack([reconstructions[i, -seq_lengths[i]:].mean(dim=0) for i in range(batch_size)])
+        
             baseline_logits = baseline_probe(activations, labels)
             sae_logits = sae_probe(features, labels)
             recon_logits = recon_probe(reconstructions, labels)
@@ -451,7 +444,8 @@ def prove_performance(llm_id, sae, dtype=torch.bfloat16, layer=12, batch_size=4,
 
 def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site="resid_pre", layer=12, seeds=[42, 49], seq_len=512, lr=0.0002, pile=False, tiny=False, openweb=False, red=False,
                topk=48, dict_size=14336, num_sequences=100, steps=195311, faithful="faithful-llama3.2-1b", results_folder='results', local=True, threshold=0.7, batch_size=4096, k=4,
-               supernatural=False, alpaca=False, openinstruct=False, additional=None, flan=False):
+               supernatural=False, alpaca=False, openinstruct=False, additional=None, flan=False, fine=False,
+               match=False, fake=False, downstream=False, viz=False):
     """
     Compare SAE models pairwise and generate similarity distribution plots.
     Also computes the ratio of decoder feature top1 activations above the threshold.
@@ -461,9 +455,9 @@ def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site
       - UMAP plots under results/umap
     sae1_list and sae2_list: Comma-separated lists (or lists) of SAE identifiers.
     """
-    sae1_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[0], seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional, flan)
+    sae1_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[0], seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional, flan, fine=fine)
     sae1_list = list(sae1_list.values())
-    sae2_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[1], seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional, flan)
+    sae2_list = get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seeds[1], seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional, flan, fine=fine)
     sae2_list = list(sae2_list.values())
 
     # Create output folders if they don't exist
@@ -490,7 +484,7 @@ def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site
         base_name = f"{sae_id1.split('/')[-1]}-{sae_id2.split('/')[-1]}"
         
         # Visualize distributions if input dimensions match
-        if sae1.cfg.d_in == sae2.cfg.d_in:
+        if sae1.cfg.d_in == sae2.cfg.d_in and match:
             enc_feat = encoder_feature_sim(sae1, sae2)
             enc_feat_df = pd.DataFrame(enc_feat.numpy(), columns=columns)
             viz_dist(enc_feat_df, 'CosSim Distribution of Encoder Features', 
@@ -522,15 +516,16 @@ def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site
                 hungarian_ratios[base_name] = hungarian_ratio
                 
                 # Generate visualization of Hungarian matching
-                plt.figure(figsize=(10, 6))
-                sns.histplot(matched_sims.numpy(), bins=50, kde=True)
-                plt.axvline(x=threshold, color='r', linestyle='--', label=f'Threshold ({threshold})')
-                plt.title(f"Hungarian Matched Feature Similarity: {base_name}")
-                plt.xlabel("Cosine Similarity")
-                plt.ylabel("Count")
-                plt.legend()
-                plt.savefig(join(results_folder, 'df', f"{base_name}_hungarian.png"))
-                plt.close()
+                if viz:
+                    plt.figure(figsize=(10, 6))
+                    sns.histplot(matched_sims.numpy(), bins=50, kde=True)
+                    plt.axvline(x=threshold, color='r', linestyle='--', label=f'Threshold ({threshold})')
+                    plt.title(f"Hungarian Matched Feature Similarity: {base_name}")
+                    plt.xlabel("Cosine Similarity")
+                    plt.ylabel("Count")
+                    plt.legend()
+                    plt.savefig(join(results_folder, 'df', f"{base_name}_hungarian.png"))
+                    plt.close()
                 
                 print(f"Top1 ratio: {ratio:.4f}, Hungarian ratio: {hungarian_ratio:.4f}")
             except Exception as e:
@@ -546,7 +541,7 @@ def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site
             with open(json_path, 'w') as f:
                 json.dump(hungarian_ratios, f, indent=2)
 
-        if sae1.cfg.d_sae == sae2.cfg.d_sae:
+        if sae1.cfg.d_sae == sae2.cfg.d_sae and viz:
             enc_neur = encoder_neuron_sim(sae1, sae2)
             enc_neur_df = pd.DataFrame(enc_neur.numpy(), columns=columns)
             viz_dist(enc_neur_df, 'CosSim Distribution of Encoder Neurons', 
@@ -556,97 +551,112 @@ def feat_match(sae_paths="./checkpoints", llm_id="meta-llama/Llama-3.2-1B", site
             viz_dist(dec_neur_df, 'CosSim Distribution of Decoder Neurons', 
                      'Cosine Similarity', save_path=join(results_folder, 'dn', f"{base_name}.png"))
 
-        # UMAP visualization
-        sae_id1 = sae_id1.split('/')[-1]
-        data = sae1.W_dec.to(torch.float32).detach().cpu().numpy()
-        if not isfile(join(results_folder, 'umap', f"{sae_id1}.png")):
-            viz_umap(data, sae_id1, results_folder)
-        sae_id2 = sae_id2.split('/')[-1]
-        data = sae2.W_dec.to(torch.float32).detach().cpu().numpy()
-        if not isfile(join(results_folder, 'umap', f"{sae_id2}.png")):
-            viz_umap(data, sae_id2, results_folder)
+        if viz:
+            # UMAP visualization
+            sae_id1 = sae_id1.split('/')[-1]
+            data = sae1.W_dec.to(torch.float32).detach().cpu().numpy()
+            if not isfile(join(results_folder, 'umap', f"{sae_id1}.png")):
+                viz_umap(data, sae_id1, results_folder)
+            sae_id2 = sae_id2.split('/')[-1]
+            data = sae2.W_dec.to(torch.float32).detach().cpu().numpy()
+            if not isfile(join(results_folder, 'umap', f"{sae_id2}.png")):
+                viz_umap(data, sae_id2, results_folder)
+    
+            print(f"Plots saved for pair: {base_name}")
 
-        print(f"Plots saved for pair: {base_name}")
-
-        
         # Fake Feature Analysis
-        print(f"\n==== Analyzing Fake Features for {base_name} ====")
-        try:
-            fake_features_1 = get_fake_features(llm_id, sae1, n_tokens=100_000, threshold=0.05, dtype=torch.bfloat16, layer=layer, batch_size=4)
-            fake_features_2 = get_fake_features(llm_id, sae2, n_tokens=100_000, threshold=0.05, dtype=torch.bfloat16, layer=layer, batch_size=4)
-            
-            fake_feature_count1 = len(fake_features_1)
-            fake_feature_count2 = len(fake_features_2)
-            fake_feature_count1_ratio = fake_feature_count1 / sae1.cfg.d_sae
-            fake_feature_count2_ratio = fake_feature_count2 / sae2.cfg.d_sae
-            
-            print(f"SAE 1 fake features: {fake_feature_count1}/{sae1.cfg.d_sae} ({fake_feature_count1_ratio:.2%})")
-            print(f"SAE 2 fake features: {fake_feature_count2}/{sae2.cfg.d_sae} ({fake_feature_count2_ratio:.2%})")
-            
-            # Store just the feature indices to keep the JSON file manageable
-            fake_feature_indices_1 = [feature[0] for feature in fake_features_1]
-            fake_feature_indices_2 = [feature[0] for feature in fake_features_2]
-            
-            fake_feature_ratios[base_name] = {
-                "fake_feature_count1": fake_feature_count1,
-                "fake_feature_count2": fake_feature_count2,
-                "fake_feature_ratio1": fake_feature_count1_ratio,
-                "fake_feature_ratio2": fake_feature_count2_ratio,
-                "d_sae1": sae1.cfg.d_sae,
-                "d_sae2": sae2.cfg.d_sae,
-                "fake_feature_indices1": fake_feature_indices_1,
-                "fake_feature_indices2": fake_feature_indices_2
-            }
-            
-            # Save intermediate results
-            json_path = join(results_folder, 'df', 'fake_features.json')
-            with open(json_path, 'w') as f:
-                json.dump(fake_feature_ratios, f, indent=2)
-                
-        except Exception as e:
-            print(f"Error in fake feature analysis: {e}")
-            fake_feature_ratios[base_name] = {"error": str(e)}
+        if fake:
+            print(f"\n==== Analyzing Fake Features for {base_name} ====")
+            try:
+                fake_features_1 = get_fake_features(llm_id, sae1, n_tokens=100_000_0, threshold=0.1, dtype=torch.float32 if "gpt2" in llm_id else torch.bfloat16, layer=layer, batch_size=4)
+                fake_features_2 = get_fake_features(llm_id, sae2, n_tokens=100_000_0, threshold=0.1, dtype=torch.float32 if "gpt2" in llm_id else torch.bfloat16, layer=layer, batch_size=4)
+
+                fake_feature_count1 = len(fake_features_1)
+                fake_feature_count2 = len(fake_features_2)
+                fake_feature_count1_ratio = fake_feature_count1 / sae1.cfg.d_sae
+                fake_feature_count2_ratio = fake_feature_count2 / sae2.cfg.d_sae
+
+                print(f"SAE 1 fake features: {fake_feature_count1}/{sae1.cfg.d_sae} ({fake_feature_count1_ratio:.2%})")
+                print(f"SAE 2 fake features: {fake_feature_count2}/{sae2.cfg.d_sae} ({fake_feature_count2_ratio:.2%})")
+
+                fake_feature_ratios[base_name] = {
+                    "avg_fake_feature_ratio": (fake_feature_count1_ratio + fake_feature_count2_ratio) / 2,
+                    "avg_fake_feature_count1": (fake_feature_count1 + fake_feature_count2) / 2,
+                    "fake_feature_count1": fake_feature_count1,
+                    "fake_feature_count2": fake_feature_count2,
+                    "fake_feature_ratio1": fake_feature_count1_ratio,
+                    "fake_feature_ratio2": fake_feature_count2_ratio,
+                    "d_sae1": sae1.cfg.d_sae,
+                    "d_sae2": sae2.cfg.d_sae,
+                }
+
+                # Save intermediate results
+                json_path = join(results_folder, 'df', 'fake_features.json')
+                with open(json_path, 'w') as f:
+                    json.dump(fake_feature_ratios, f, indent=2)
+
+            except Exception as e:
+                print(f"Error in fake feature analysis: {e}")
+                fake_feature_ratios[base_name] = {"error": str(e)}
+
 
         # Downstream Prove Performance
-        print(f"\n==== Evaluating Downstream Performance for {base_name} ====")
-        downstream_prove_acc[base_name] = {}
-        
-        classification_datasets = [
-            {"dataset_id": "stanfordnlp/sst2", "subset": None, "test_split": "validation", "train_split": "train", "dataset_labels": 2, "input_col": "sentence", "label_col": "label"},
-            {"dataset_id": "nyu-mll/glue", "subset": "cola", "test_split": "validation", "train_split": "train", "dataset_labels": 2, "input_col": "sentence", "label_col": "label"},
-            {"dataset_id": "imdb", "subset": None, "test_split": "test", "train_split": "train", "dataset_labels": 2, "input_col": "text", "label_col": "label"},
-            {"dataset_id": "ag_news", "subset": None, "test_split": "test", "train_split": "train", "dataset_labels": 4, "input_col": "text", "label_col": "label"},
-            {"dataset_id": "yelp_polarity", "subset": None, "test_split": "test", "train_split": "train", "dataset_labels": 2, "input_col": "text", "label_col": "label"},
-        ]
-        
-        for dataset_cfg in classification_datasets:
-            dataset_name = f"{dataset_cfg['dataset_id']}"
-            if dataset_cfg["subset"]:
-                dataset_name += f"/{dataset_cfg['subset']}"
-                
-            print(f"\nEvaluating {dataset_name}...")
-            try:
-                baseline_acc, sae_acc, recon_acc, baseline_f1, sae_f1, recon_f1 = prove_performance(
-                    llm_id, sae1, dtype=torch.bfloat16, layer=layer, batch_size=4, **dataset_cfg
-                )
-                
-                downstream_prove_acc[base_name][dataset_name] = {
-                    "baseline_acc": baseline_acc,
-                    "sae_acc": sae_acc,
-                    "recon_acc": recon_acc,
-                    "baseline_f1": baseline_f1,
-                    "sae_f1": sae_f1,
-                    "recon_f1": recon_f1
-                }
-                
-                # Save intermediate results after each dataset
-                json_path = join(results_folder, 'df', 'downstream_prove_acc.json')
-                with open(json_path, 'w') as f:
-                    json.dump(downstream_prove_acc, f, indent=2)
+        if downstream:
+            print(f"\n==== Evaluating Downstream Performance for {base_name} ====")
+            downstream_prove_acc[base_name] = {}
+            
+            classification_datasets = [
+                {"dataset_id": "stanfordnlp/sst2", "subset": None, "test_split": "validation", "train_split": "train", "dataset_labels": 2, "input_col": "sentence", "label_col": "label"},
+                {"dataset_id": "nyu-mll/glue", "subset": "cola", "test_split": "validation", "train_split": "train", "dataset_labels": 2, "input_col": "sentence", "label_col": "label"},
+                {"dataset_id": "yelp_polarity", "subset": None, "test_split": "test", "train_split": "train", "dataset_labels": 2, "input_col": "text", "label_col": "label"},
+            ]
+            
+            for dataset_cfg in classification_datasets:
+                dataset_name = f"{dataset_cfg['dataset_id']}"
+                if dataset_cfg["subset"]:
+                    dataset_name += f"/{dataset_cfg['subset']}"
                     
-            except Exception as e:
-                print(f"Error evaluating {dataset_name}: {e}")
-                downstream_prove_acc[base_name][dataset_name] = {"error": str(e)}
+                print(f"\nEvaluating {dataset_name}...")
+                try:
+                    baseline_acc1, sae_acc1, recon_acc1, baseline_f11, sae_f11, recon_f11 = prove_performance(
+                        llm_id, sae1, dtype=torch.float32 if "gpt2" in llm_id else torch.bfloat16, layer=layer, batch_size=4, **dataset_cfg
+                    )
+    
+                    baseline_acc2, sae_acc2, recon_acc2, baseline_f12, sae_f12, recon_f12 = prove_performance(
+                        llm_id, sae2, dtype=torch.float32 if "gpt2" in llm_id else torch.bfloat16, layer=layer, batch_size=4, **dataset_cfg
+                    )
+                    
+                    baseline_acc = (baseline_acc1 + baseline_acc2) / 2
+                    sae_acc = (sae_acc1 + sae_acc2) / 2
+                    recon_acc = (recon_acc1 + recon_acc2) / 2
+                    baseline_f1 = (baseline_f11 + baseline_f12) / 2
+                    sae_f1 = (sae_f11 + sae_f12) / 2
+                    recon_f1 = (recon_f11 + recon_f12) / 2
+                    
+                    downstream_prove_acc[base_name][dataset_name] = {
+                        "baseline_acc": baseline_acc,
+                        "sae_acc": sae_acc,
+                        "recon_acc": recon_acc,
+                        "baseline_f1": baseline_f1,
+                        "sae_f1": sae_f1,
+                        "recon_f1": recon_f1,
+                        "baseline_acc1": baseline_acc1,
+                        "sae_acc1": sae_acc1,
+                        "recon_acc1": recon_acc1,
+                        "baseline_f11": baseline_f11,
+                        "sae_f11": sae_f11,
+                        "recon_f11": recon_f11,
+                        "baseline_acc2": baseline_acc2,
+                    }
+                    
+                    # Save intermediate results after each dataset
+                    json_path = join(results_folder, 'df', 'downstream_prove_acc.json')
+                    with open(json_path, 'w') as f:
+                        json.dump(downstream_prove_acc, f, indent=2)
+                        
+                except Exception as e:
+                    print(f"Error evaluating {dataset_name}: {e}")
+                    downstream_prove_acc[base_name][dataset_name] = {"error": str(e)}
 
 if __name__ == '__main__':
     fire.Fire(feat_match)
