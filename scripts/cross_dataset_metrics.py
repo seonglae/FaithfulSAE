@@ -24,17 +24,18 @@ from convert import convert
 # Make tokenizer global so it's accessible in all functions
 tokenizer = None
 
-def get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seed, seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional, flan):
-    dataset_ids["faithful"] = f"seonglae/{faithful}"
+def get_sae_folders(sae_paths, llm_id, site, layer, dict_size, topk, lr, seed, seq_len, steps, faithful, tiny, openweb, red, pile, supernatural, alpaca, openinstruct, additional, flan, fine, owner="seonglae"):
+    dataset_ids["faithful"] = f"{owner}/{faithful}"
     model_name = llm_id.split('/')[-1]
     if model_name == "gpt2":
         model_name = "gpt2-small"
     
     # Define SAE paths directly in main
     sae_folders = {
-        "fineweb": f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_fineweb_{seq_len}_{steps}",
         "faithful": f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_{faithful}_{seq_len}_{steps}"
     }
+    if fine:
+        sae_folders["fineweb"] = f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_fineweb_{seq_len}_{steps}"
     if flan:
         sae_folders["flan"] = f"{sae_paths}/{model_name}_blocks.{layer}.hook_{site}_{dict_size}_topk_{topk}_{lr}_{seed}_FLAN_{seq_len}_{steps}"
     if additional:
