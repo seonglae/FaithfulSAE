@@ -1,12 +1,4 @@
 ## Quick starts
-```bash
-$ git clone git@github.com:EleutherAI/sparsify.git  # 1. clone EleutherAI's SAE repo inside our UCL-SAE repo directory. pip installation leads to errors.
-$ conda env create -f environment.yml  # 2. create a conda env with required packages
-```
-
-## TODOs
-- [ ] Update the Wandb config to use the team's wandb dashboard to share the training details
-- [ ] Write a new code to make sure that all model-generated datasets have the same number of *tokens*
 
 ## Dataset Generation
 
@@ -97,5 +89,17 @@ The `train_sae.py` script performs the following:
 Different expansion factors are used for different model sizes to match the final SAE dictionary size:
 - pythia-1.4b: 20x
 - pythia-2.8b: 16x
+
+
+```bib
+@inproceedings{
+cho2025faithfulsae,
+title={Faithful{SAE}: Towards Capturing Faithful Features with Sparse Autoencoders without External Datasets Dependency},
+author={Seonglae Cho and Harryn Oh and Donghyun Lee and Luis Eduardo Rodrigues Vieira and Andrew Bermingham and Ziad El Sayed},
+booktitle={ACL 2025 Student Research Workshop},
+year={2025},
+url={https://openreview.net/forum?id=tBn9ChHGG9}
+}
+```
 
 The script cleans up checkpoint files after training to save disk space.
