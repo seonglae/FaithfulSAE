@@ -14,12 +14,12 @@
 - 📊 **Superior Downstream Performance**: Outperforms web-trained SAEs on probing tasks
 - 🔄 **More Stable**: Higher feature consistency across different seeds
 
-![Fake Feature Ratio](assets/ffr.png)
-*FaithfulSAEs show lower Fake Feature Ratios (lower is better).*
-
 ![SAE Probing Performance](assets/sae-probing.png)
 *FaithfulSAEs demonstrate superior performance on downstream probing tasks.*
 
+<img src="assets/cediff.png" width="600" alt="Cross-Entropy Difference">
+
+*FaithfulSAEs achieve better faithfulness metrics, like lower Cross-Entropy differences.*
 
 ## 🛠️ Quick Start
 
@@ -89,9 +89,6 @@ python scripts/cross_dataset_metrics.py \
     --pile
 ```
 
-![Cross-Entropy Difference](assets/cediff.png)
-*FaithfulSAEs achieve better faithfulness metrics, like lower Cross-Entropy differences.*
-
 ### 3. Seed Sensitivity Analysis
 Analyze how different initialization seeds affect learned features:
 
@@ -111,6 +108,10 @@ python measure_dataset.py \
 ```
 
 ## 📈 Key Results
+
+<img src="assets/ffr.png" width="700" alt="Fake Feature Ratio">
+
+*FaithfulSAEs show lower Fake Feature Ratios (lower is better).*
 
 - **Fake Feature Ratio**: FaithfulSAEs show lower fake feature ratios in 5 out of 7 tested models
 - **SAE Probing**: Superior performance on downstream tasks (SST-2, CoLA, Yelp)
@@ -135,8 +136,7 @@ FaithfulSAE/
 If you find FaithfulSAE useful in your research, please cite:
 
 ```bibtex
-@inproceedings{
-cho2025faithfulsae,
+@inproceedings{cho2025faithfulsae,
   title={Faithful{SAE}: Towards Capturing Faithful Features with Sparse Autoencoders 
 without External Datasets Dependency},
   author={Seonglae Cho and Harryn Oh and Donghyun Lee and Luis Eduardo Rodrigues Vieira 
