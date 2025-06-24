@@ -1,5 +1,6 @@
 *.jsonl
 *.png
+!assets/*.png
 task
 temp.py
 __pycache__
