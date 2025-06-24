@@ -28,7 +28,7 @@ for sae_type in ['topk']:
         cfg["seq_len"] = 512
         cfg["act_size"] = 4096
         cfg["dict_size"] = 4096 * 4
-        cfg["num_tokens"] = int(1e7)
+        cfg["num_tokens"] = int(1e8)
         cfg["batch_size"] = 512
         cfg["model_batch_size"] = 16
         cfg['wandb_project'] = 'intrinsic_sae'
