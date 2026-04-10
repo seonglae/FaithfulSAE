@@ -11,7 +11,7 @@ dependencies = [
     "scipy>=1.15.3",
     "seaborn>=0.13.2",
     "tqdm>=4.67.1",
-    "transformers>=4.51.3",
+    "transformers>=5.0.0rc3",
     "umap-learn>=0.5.7",
     "vllm>=0.8.5.post1",
 ]
