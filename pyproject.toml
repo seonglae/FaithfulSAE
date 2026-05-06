@@ -13,5 +13,5 @@ dependencies = [
     "tqdm>=4.67.1",
     "transformers>=5.0.0rc3",
     "umap-learn>=0.5.7",
-    "vllm>=0.8.5.post1",
+    "vllm>=0.20.0",
 ]
